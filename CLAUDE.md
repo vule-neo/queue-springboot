@@ -1,0 +1,142 @@
+# CLAUDE.md
+
+Ovaj fajl daje Claude-u (Claude Code ili chat) kontekst o projektu kad god ga pitam za pomoć.
+
+## Projekat
+
+**Queue Management System** — sistem za digitalizaciju fizičkog čekanja (npr. dom zdravlja, šalteri). Portfolio/learning projekat, cilj je backend znanje za AI/backend intervjue, ne startup.
+
+Lifecycle: `organizacija → lokacija → usluga → šalter → red → ticket → pozivanje → obrada → statistika`
+
+## Arhitektura
+
+- **Modular monolith** u Spring Bootu — NE microservices. Moduli kao paketi: `auth`, `organizations`, `queues`, `tickets`, `counters`, `notifications`, `analytics`.
+- Frontend: Angular, tri odvojena interfejsa (customer / employee / public display).
+- Baza: PostgreSQL + Flyway migracije (nema Hibernate auto-ddl u produkciji).
+- Redis: caching (public display) + rate limiting.
+- RabbitMQ: event-driven komunikacija (`TicketCreated`, `TicketCalled`, `TicketCompleted`, `TicketCancelled`).
+- WebSocket (STOMP): real-time update za customer i public display ekrane.
+
+## Ticket state machine
+
+```
+WAITING → CALLED → SERVING → COMPLETED
+WAITING → CANCELLED
+CALLED → NO_SHOW
+CALLED → SKIPPED → WAITING
+```
+
+Nema preskakanja stanja. Svaki prelaz mora biti validiran u servisu, ne samo u kontroleru.
+
+## Uloge
+
+- `CUSTOMER` — uzima ticket, gleda svoj status, otkazuje
+- `EMPLOYEE` — otvara counter, poziva sljedećeg, završava/skipuje
+- `MANAGER` — kreira queue/counter, upravlja zaposlenima, gleda statistiku
+- `ADMIN` — sve
+
+JWT + `@PreAuthorize` po ulozi.
+
+## Plan rada — detaljno po verzijama
+
+Radim inkrementalno, svaka verzija je funkcionalna demo aplikacija. **Ne preskačem verzije** — tehnologija ulazi tek kad postoji konkretan problem koji rješava.
+
+### V1 — CRUD Skeleton
+
+Redoslijed:
+1. Setup projekta (Spring Initializr: Web, JPA, PostgreSQL, Validation, Flyway, Lombok) + Angular CLI
+2. Baza + Flyway — prva migracija (`V1__init.sql`): `organization`, `location`, `service`, `queue`, `ticket`. Bez `ddl-auto: update`.
+3. Entiteti + relacije, redom: `Organization → Location → Service → Queue → Ticket`
+4. Repository sloj (Spring Data JPA)
+5. Service sloj — kreiranje ticketa, status = `WAITING` (bez state machine logike još)
+6. Controller sloj — `POST /organizations`, `POST /locations`, `POST /services`, `POST /queues/{id}/tickets`, `GET /queues/{id}/tickets`
+7. DTO-ovi + mapping (ne vraćati entitete direktno)
+8. Exception handling — `@ControllerAdvice`
+9. Angular — forma "uzmi broj" + lista reda, bez stila, fokus na funkcionalnost
+
+Znanje: Spring Boot osnove (`@RestController`, `@Service`, `@Repository`, DI), JPA/Hibernate (`@Entity`, relacije, lazy/eager, N+1 osnovno), Flyway konvencije, REST/DTO pattern, Angular osnove (`HttpClient`, forme, routing).
+
+### V2 — Security + Ticket Lifecycle
+
+Redoslijed:
+1. Spring Security setup (`SecurityFilterChain`, `UserDetailsService`, password encoder)
+2. User entitet + `POST /auth/register`, `POST /auth/login`
+3. JWT generisanje/validacija (filter čita token, postavlja `SecurityContext`)
+4. Role-based authorization (`@PreAuthorize`)
+5. Ticket state machine — enum `TicketStatus` + validacija prelaza u servisu
+6. `POST /queues/{id}/next` (bez lockinga — to je V4)
+7. Angular employee dashboard — login, route guards, dugme "pozovi sljedećeg"
+
+Znanje: Spring Security arhitektura (filter chain, autentikacija vs autorizacija), JWT struktura i potpisivanje (`jjwt`), state machine pattern (čista logika, bez biblioteke), Angular HTTP interceptor + route guards.
+
+### V3 — WebSocket / Real-time
+
+Redoslijed:
+1. WebSocket config (`@EnableWebSocketMessageBroker`, STOMP endpoint `/ws`)
+2. Topic struktura (`/topic/queue/{queueId}`)
+3. Broadcast na promjenu statusa iz servisa
+4. Angular WebSocket klijent (`@stomp/stompjs` / `sockjs-client`)
+5. Customer ekran real-time update
+6. Public display ekran (poseban route, isti topic, drugi UI)
+
+Znanje: STOMP protokol osnove, Spring `SimpMessagingTemplate`, RxJS (`Observable`, `Subject`).
+
+### V4 — Concurrency + Redis
+
+Redoslijed:
+1. Reprodukuj problem prvo — test sa 20 paralelnih zahtjeva na "pozovi sljedećeg", dokaži duplikat prije fixa
+2. Pesimistic locking (`@Lock(LockModeType.PESSIMISTIC_WRITE)`)
+3. Pravilne `@Transactional` granice
+4. Ponovi test, dokaži fix
+5. Redis cache za public display (`@Cacheable`)
+6. Rate limiting na `POST /tickets` (Bucket4j + Redis)
+
+Znanje: transaction isolation levels, optimistic vs pesimistic locking, Redis osnove (`RedisTemplate` / Spring Cache), concurrent testing (`ExecutorService`, `CountDownLatch`). Najteži konceptualni dio — ne žuriti.
+
+### V5 — RabbitMQ + Notifications
+
+Redoslijed:
+1. RabbitMQ setup (exchange, queue, binding — Spring AMQP)
+2. Event objekti (`TicketCreated`, `TicketCalled`, itd. kao DTO)
+3. Producer u `TicketService` nakon promjene statusa
+4. Consumer u `notifications` paketu (`@RabbitListener`) — log ili email
+5. Analytics consumer — drugi listener, bilježi u `analytics` tabelu
+
+Znanje: message broker osnove (exchange types, binding), Spring AMQP (`RabbitTemplate`, `@RabbitListener`), idempotency (šta ako se event obradi dvaput).
+
+### V6 — Analytics + Estimation
+
+Redoslijed:
+1. `QueueEvent` audit tabela (who/what/when), ako već ne postoji
+2. Wait time V1 — jednostavna formula, on-the-fly
+3. Manager dashboard endpoints — agregacije (`GET /analytics/today`)
+4. Wait time V2 — istorija po service-u/danu, prosjek umjesto konstante
+5. Angular grafikoni (Chart.js / ngx-charts)
+
+Znanje: SQL agregacije (`GROUP BY`, `AVG`, `COUNT`) ili JPQL/Criteria ekvivalent, osnovna statistika (prosjek, rolling average), chart biblioteka po izboru.
+
+### V7 — Docker + Testing + CI/CD
+
+Redoslijed:
+1. Dockerfile za backend (multi-stage) i frontend
+2. `docker-compose.yml` — backend, frontend, postgres, redis, rabbitmq + env varijable
+3. Unit testovi — `QueueService`, `TicketService` (Mockito)
+4. Integration testovi — Testcontainers (pravi Postgres/Redis/RabbitMQ)
+5. Concurrency test iz V4 formalizovan kao pravi JUnit test
+6. GitHub Actions — build + test na svaki push/PR
+7. Deploy (Railway/Render ili VPS)
+
+Znanje: Docker osnove (image vs container, multi-stage build, compose networking), JUnit 5 + Mockito, Testcontainers koncept (zašto bolje od H2), GitHub Actions YAML osnove.
+
+## Kako mi Claude treba da pomaže
+
+- Kad pitam za kod, drži se trenutne verzije (V1–V7) na kojoj radim — ne predlaži prečice iz kasnijih verzija ako nisam tamo stigao.
+- Kod komentariši minimalno, objasni *zašto* (npr. zašto pesimistic lock a ne optimistic za ovaj slučaj), ne samo *šta*.
+- Kad je u pitanju concurrency/locking/transactions — budi eksplicitan oko trade-offova, to mi je najbitniji dio za intervjue.
+- Ne piši mi cijele module odjednom bez da pitaš — radije jedan entitet/servis/endpoint po put, da mogu pratiti i sam kucati dio koda.
+- Ako nešto može da se uradi na više načina (npr. DTO mapping, exception handling stil), predloži jedan pristup i kratko objasni zašto, umjesto tri opcije bez preporuke.
+- Testove tretiraj kao dio zadatka, ne kao naknadnu misao — pogotovo concurrency test iz V4.
+
+## Stack (za referencu)
+
+Spring Boot, Spring Security (JWT), Spring Data JPA, PostgreSQL, Flyway, Redis, RabbitMQ, WebSocket (STOMP), Angular, Docker/Docker Compose, JUnit + Mockito + Testcontainers.

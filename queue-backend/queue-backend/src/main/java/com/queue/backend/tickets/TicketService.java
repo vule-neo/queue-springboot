@@ -1,0 +1,191 @@
+package com.queue.backend.tickets;
+
+import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.util.List;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import com.queue.backend.common.InvalidStateTransitionException;
+import com.queue.backend.common.NotFoundException;
+import com.queue.backend.queues.Queue;
+import com.queue.backend.queues.QueueService;
+
+@Service
+public class TicketService {
+
+    private final TicketRepository repository;
+    private final QueueService queueService;
+    private final TicketEventPublisher events;
+
+    public TicketService(TicketRepository repository,
+                         QueueService queueService,
+                         TicketEventPublisher events) {
+        this.repository = repository;
+        this.queueService = queueService;
+        this.events = events;
+    }
+
+    // ---------------------------------------------------------------
+    // Izdavanje
+    // ---------------------------------------------------------------
+
+    /**
+     * Izdaje sljedeci broj u redu.
+     *
+     * PAZNJA: citanje lastNumber pa upis lastNumber+1 nije atomicno.
+     * Dva istovremena zahtjeva mogu dobiti isti broj. Namjerno ostavljeno -
+     * V4 tu gresku prvo dokazuje testom, pa je rjesava lockingom.
+     */
+    @Transactional
+    public TicketResponse create(Long queueId) {
+        Queue queue = queueService.getEntity(queueId);
+
+        LocalDate danas = LocalDate.now();
+
+        if (!danas.equals(queue.getLastNumberDate())) {
+            queue.setLastNumber(0);
+            queue.setLastNumberDate(danas);
+        }
+
+        int sljedeci = queue.getLastNumber() + 1;
+        queue.setLastNumber(sljedeci);
+        // queue se ne snima rucno - dirty checking posalje UPDATE na kraju.
+
+        Ticket ticket = new Ticket();
+        ticket.setQueue(queue);
+        ticket.setNumber(String.format("%s%03d", queue.getPrefix(), sljedeci));
+        ticket.setSequenceNo(sljedeci);
+        ticket.setIssuedDate(danas);
+        ticket.setStatus(TicketStatus.WAITING);
+
+        Ticket snimljen = repository.save(ticket);
+
+        // Broadcast ide iz SERVISA, ne iz kontrolera: tako poruka ode i kad
+        // promjena dodje iz WebSocket-a, Rabbit listenera (V5) ili zakazanog
+        // posla - a ne samo iz HTTP zahtjeva.
+        events.objavi(TicketEvent.izdat(snimljen));
+
+        return TicketResponse.from(snimljen);
+    }
+
+    // ---------------------------------------------------------------
+    // Zivotni ciklus
+    // ---------------------------------------------------------------
+
+    /** Pozovi sljedeceg koji ceka u ovom redu danas. */
+    @Transactional
+    public TicketResponse callNext(Long queueId) {
+        // Postojanje reda provjeravamo posebno da bi 404 bio tacan:
+        // "red ne postoji" nije isto sto i "red je prazan".
+        queueService.getEntity(queueId);
+
+        Ticket sljedeci = repository
+                .findFirstByQueueIdAndIssuedDateAndStatusOrderBySequenceNoAsc(
+                        queueId, LocalDate.now(), TicketStatus.WAITING)
+                .orElseThrow(() -> new NotFoundException("Nema nikoga u redu " + queueId));
+
+        // I ovdje je V4 problem: dva saltera mogu istovremeno procitati
+        // isti ticket i oba ga pozvati.
+        return promijeni(sljedeci, TicketStatus.CALLED);
+    }
+
+    /** Pozovi konkretan ticket (npr. preskoceni koji se vratio). */
+    @Transactional
+    public TicketResponse call(Long ticketId) {
+        return promijeni(getEntity(ticketId), TicketStatus.CALLED);
+    }
+
+    /** Musterija je dosla na salter - pocinje obrada. */
+    @Transactional
+    public TicketResponse startServing(Long ticketId) {
+        return promijeni(getEntity(ticketId), TicketStatus.SERVING);
+    }
+
+    @Transactional
+    public TicketResponse complete(Long ticketId) {
+        return promijeni(getEntity(ticketId), TicketStatus.COMPLETED);
+    }
+
+    /** Pozvan pa se nije pojavio. */
+    @Transactional
+    public TicketResponse noShow(Long ticketId) {
+        return promijeni(getEntity(ticketId), TicketStatus.NO_SHOW);
+    }
+
+    /** Preskoci - ticket ceka da ga se vrati u red. */
+    @Transactional
+    public TicketResponse skip(Long ticketId) {
+        return promijeni(getEntity(ticketId), TicketStatus.SKIPPED);
+    }
+
+    /** Vrati preskoceni ticket u red. */
+    @Transactional
+    public TicketResponse requeue(Long ticketId) {
+        return promijeni(getEntity(ticketId), TicketStatus.WAITING);
+    }
+
+    /** Musterija odustaje. */
+    @Transactional
+    public TicketResponse cancel(Long ticketId) {
+        return promijeni(getEntity(ticketId), TicketStatus.CANCELLED);
+    }
+
+    // ---------------------------------------------------------------
+    // Citanje
+    // ---------------------------------------------------------------
+
+    @Transactional(readOnly = true)
+    public List<TicketResponse> findByQueue(Long queueId) {
+        return repository
+                .findByQueueIdAndIssuedDateOrderBySequenceNoAsc(queueId, LocalDate.now())
+                .stream()
+                .map(TicketResponse::from)
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public TicketResponse findById(Long id) {
+        return TicketResponse.from(getEntity(id));
+    }
+
+    // ---------------------------------------------------------------
+
+    private Ticket getEntity(Long id) {
+        return repository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Ticket " + id + " ne postoji"));
+    }
+
+    /**
+     * Jedina tacka gdje se status mijenja. Svaki prelaz prolazi ovuda,
+     * pa se pravilo ne moze zaobici - ni iz kontrolera, ni iz WebSocket-a
+     * u V3, ni iz Rabbit listenera u V5.
+     */
+    private TicketResponse promijeni(Ticket ticket, TicketStatus cilj) {
+        TicketStatus trenutni = ticket.getStatus();
+
+        if (!trenutni.moze(cilj)) {
+            throw new InvalidStateTransitionException(
+                    "Ticket " + ticket.getNumber() + ": prelaz " + trenutni + " -> " + cilj
+                            + " nije dozvoljen");
+        }
+
+        ticket.setStatus(cilj);
+
+        // Vremenske oznake se postavljaju samo pri prvom ulasku u stanje -
+        // nose V6 statistiku (koliko se cekalo, koliko je trajala obrada).
+        if (cilj == TicketStatus.CALLED && ticket.getCalledAt() == null) {
+            ticket.setCalledAt(OffsetDateTime.now());
+        }
+        if (cilj == TicketStatus.COMPLETED) {
+            ticket.setCompletedAt(OffsetDateTime.now());
+        }
+
+        // Bez save(): ticket je ucitan u ovoj transakciji, dirty checking
+        // sam posalje UPDATE na kraju.
+        events.objavi(TicketEvent.promijenjen(ticket));
+
+        return TicketResponse.from(ticket);
+    }
+}

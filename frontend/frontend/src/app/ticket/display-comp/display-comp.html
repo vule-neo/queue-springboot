@@ -1,0 +1,20 @@
+<div style="text-align: center; font-family: system-ui">
+
+  <p style="font-size: 1.2rem; color: #666">Red #{{ queueId }}</p>
+
+  @if (trenutni(); as t) {
+    <p style="font-size: 1.5rem; color: #666; margin: 0">NA REDU</p>
+    <p style="font-size: 8rem; font-weight: 700; margin: 0">{{ t.number }}</p>
+  } @else {
+    <p style="font-size: 3rem; color: #999">&mdash;</p>
+  }
+
+  <h3>Sljedeci</h3>
+  <p style="font-size: 2rem; letter-spacing: 0.5rem">
+    @for (t of sljedeci(); track t.id) {
+      {{ t.number }}
+    } @empty {
+      <span style="font-size: 1rem; color: #999">nema nikoga</span>
+    }
+  </p>
+</div>

@@ -1,0 +1,17 @@
+<h2>Prijava</h2>
+
+<form [formGroup]="forma" (ngSubmit)="posalji()">
+  <div>
+    <label>Email <input type="email" formControlName="email" /></label>
+  </div>
+  <div>
+    <label>Lozinka <input type="password" formControlName="password" /></label>
+  </div>
+
+  <button type="submit" [disabled]="radi()">Prijavi se</button>
+  <button type="button" (click)="registruj()" [disabled]="radi()">Registruj se</button>
+</form>
+
+@if (greska(); as poruka) {
+  <p style="color: crimson">{{ poruka }}</p>
+}

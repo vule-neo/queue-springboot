@@ -1,0 +1,16 @@
+<h2>Redovi</h2>
+
+<button (click)="ucitaj()">Osvjezi</button>
+
+<ul>
+  @for (q of queues(); track q.id) {
+    <li>
+      <a [routerLink]="['/queues', q.id]">
+        #{{ q.id }} &mdash; prefiks {{ q.prefix }}
+      </a>
+      &mdash; izdato danas: {{ q.lastNumber }}
+    </li>
+  } @empty {
+    <li>Nema redova.</li>
+  }
+</ul>

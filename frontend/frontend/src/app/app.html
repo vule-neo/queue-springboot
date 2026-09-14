@@ -1,0 +1,11 @@
+<header>
+  <strong>Queue Management</strong>
+  @if (auth.jePrijavljen()) {
+    <span> &mdash; {{ auth.email() }} ({{ auth.uloga() }}) </span>
+    <button (click)="auth.logout()">Odjavi se</button>
+  }
+</header>
+
+<hr />
+
+<router-outlet></router-outlet>

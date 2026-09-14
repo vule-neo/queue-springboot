@@ -1,0 +1,50 @@
+<a routerLink="/">&larr; nazad na redove</a>
+
+<h2>
+  Red #{{ queueId }}
+  @if (uzivo()) { <small style="color: green">&bull; uzivo</small> }
+</h2>
+
+<button (click)="uzmiBroj()">Uzmi broj</button>
+<button (click)="ucitaj()">Osvjezi</button>
+<a [routerLink]="['/display', queueId]">javni ekran</a>
+
+@if (auth.jeOsoblje()) {
+  <button (click)="pozoviSljedeceg()">Pozovi sljedeceg</button>
+}
+
+@if (zadnjiBroj(); as broj) {
+  <p>Tvoj broj: <strong>{{ broj }}</strong></p>
+}
+
+@if (greska(); as poruka) {
+  <p style="color: crimson">{{ poruka }}</p>
+}
+
+<h3>Ko ceka danas ({{ tickets().length }})</h3>
+<ul>
+  @for (t of tickets(); track t.id) {
+    <li>
+      <strong>{{ t.number }}</strong> &mdash; {{ t.status }}
+
+      @if (auth.jeOsoblje()) {
+        @switch (t.status) {
+          @case ('WAITING') { <button (click)="akcija(t.id, 'pozovi')">pozovi</button> }
+          @case ('CALLED') {
+            <button (click)="akcija(t.id, 'obradjuj')">obradjuj</button>
+            <button (click)="akcija(t.id, 'preskoci')">preskoci</button>
+            <button (click)="akcija(t.id, 'nijeDosao')">nije dosao</button>
+          }
+          @case ('SERVING') { <button (click)="akcija(t.id, 'zavrsi')">zavrsi</button> }
+          @case ('SKIPPED') { <button (click)="akcija(t.id, 'vratiURed')">vrati u red</button> }
+        }
+      }
+
+      @if (t.status === 'WAITING') {
+        <button (click)="akcija(t.id, 'otkazi')">otkazi</button>
+      }
+    </li>
+  } @empty {
+    <li>Red je prazan.</li>
+  }
+</ul>

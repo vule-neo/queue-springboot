@@ -1,0 +1,30 @@
+# --- tajne ---
+# Lozinke i kljucevi nikad ne idu u git.
+application-local.properties
+
+# --- build ---
+target/
+build/
+dist/
+node_modules/
+.angular/
+
+# --- logovi ---
+*.log
+hs_err_pid*
+replay_pid*
+
+# --- IDE ---
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# --- OS ---
+Thumbs.db
+.DS_Store
+
+# --- nije dio projekta ---
+*.pdf

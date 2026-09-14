@@ -1,0 +1,7 @@
+# Kopiraj u application-local.properties i popuni.
+# Taj fajl je u .gitignore i nikad se ne commituje.
+
+spring.datasource.password=TVOJA_POSTGRES_LOZINKA
+
+# Generisi novi:  openssl rand -base64 48
+app.jwt.secret=BASE64_KLJUC_NAJMANJE_32_BAJTA
