@@ -6,6 +6,7 @@ import java.time.OffsetDateTime;
 import org.hibernate.annotations.CreationTimestamp;
 
 import com.queue.backend.queues.Queue;
+import com.queue.backend.users.User;
 
 import jakarta.persistence.*;
 import lombok.Getter;
@@ -54,4 +55,10 @@ public class Ticket {
 
     @Column(name = "completed_at")
     private OffsetDateTime completedAt;
+
+    // Ko je uzeo broj. Null za stare tickete i za brojeve izdate na salteru
+    // bez naloga. Po ovome se provjerava "otkazujes SVOJ ticket".
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id")
+    private User user;
 }

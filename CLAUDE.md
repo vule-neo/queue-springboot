@@ -149,38 +149,44 @@ Ovaj dio se dopisuje kako projekat napreduje — čitaj ga prvo.
 ## Dokle smo stigli
 
 ```
-✅ V1  CRUD skeleton              ✅ V3  WebSocket real-time
-✅ V2  Security + JWT + state machine    ✅ V4  Concurrency + Redis (locking, keš, rate limit)
-✅ V5  RabbitMQ    ⬜ V6  Analytics    ⬜ V7  Docker + testovi + CI/CD
+✅ V1  CRUD skeleton              ✅ V3  WebSocket real-time     ✅ V5  RabbitMQ
+✅ V2  Security + JWT + state machine    ✅ V4  Concurrency + Redis    ✅ V6  Analytics
+✅ V7  Docker + Testcontainers + CI   (deploy na javni host NIJE urađen — traži nalog/VPS)
 ```
 
-Git: `main` — `4e4f845` V1–V3, `f870362` V4 locking, `dffe100` V4 Redis keš,
-`db6923c` V4 rate limiting, `387ca87` V5 RabbitMQ.
+Git: `main` — `4e4f845` V1–V3, `f870362` V4 locking, `dffe100` V4 keš, `db6923c` V4
+rate limit, `387ca87` V5 RabbitMQ, `366e08c` V6 analytics, V7 = zadnji commit.
 
-## Sljedeći korak
+**Plan je završen.** README.md je portfolio ulaz — čitaj njega za pregled.
 
-**V6 Analytics.** Sirovina već postoji: `ticket_event_log` (V5 analytics
-consumer puni jedan red po događaju, sa `occurred_at` i `status`). Korak 1 iz
-plana (`QueueEvent` audit tabela) je time gotov. Ide: wait time V1 (formula
-on-the-fly) → `GET /analytics/today` (JPQL agregacije nad `ticket_event_log`)
-→ wait time V2 (prosjek iz istorije) → Angular grafikoni.
+## Šta bi bilo sljedeće (ako se nastavlja)
+
+1. **Deploy** — `docker compose up` na VPS-u (Hetzner/DO) ili Railway. Traži nalog.
+2. **Outbox pattern** — jedina svjesno ostavljena rupa: commit prođe, Rabbit
+   ugašen → event izgubljen (logira se kao ERROR). Tabela `outbox` + scheduler.
+3. **Counter modul** — procjena čekanja pretpostavlja jedan šalter.
+4. **Angular testovi** — postoje samo generisani `.spec.ts`, CI ih ne pokreće.
+5. `skip`/`requeue` spajanje — odluka i dalje nije donesena.
 
 ## Docker — šta mora biti upaljeno
 
 Docker Desktop je instaliran **po korisniku**
 (`%LOCALAPPDATA%\Programs\DockerDesktop\Docker Desktop.exe`), ne u Program
 Files. Ako `docker ps` javi "cannot find the file specified" → Desktop nije
-pokrenut, ne fali instalacija. Kontejneri:
+pokrenut, ne fali instalacija.
+
+Dva načina rada, **ne miješati** (sudaraju se na portovima 6379/5672/80):
 
 ```bash
-docker start redis        # 6379 — keš + rate limit; app radi i bez njega (sporije, bez limita)
-docker start rabbitmq     # 5672 AMQP, 15672 web UI (guest/guest); app radi i bez njega (eventi se gube)
+# a) razvoj: samostalni kontejneri + backend/frontend iz IDE-a
+docker start redis rabbitmq
+# b) sve u Dockeru
+docker compose up --build        # .env mora postojati (vidi .env.example)
 ```
 
-RabbitMQ kontejner ima named volume `rabbitmq_data`. Prvi `docker run` je pao
-sa `.erlang.cookie: eacces` (fajl root-ov, proces `rabbitmq`) — popravljeno
-jednokratno sa `chown rabbitmq:rabbitmq` u volume-u. Ako se ikad pravi novi
-kontejner, isto ponoviti.
+RabbitMQ: prvi `docker run` je pao sa `.erlang.cookie: eacces` (entrypoint kao
+root ostavi cookie root-u, proces radi kao `rabbitmq`). Samostalni kontejner
+je popravljen `chown`-om u volume-u; u compose-u je rješenje `user: rabbitmq`.
 
 ## Kako se pokreće
 
@@ -232,16 +238,23 @@ cd frontend\frontend ; npx ng serve
   je pao na dužini, poruka otišla u DLQ. Dobar dokaz da DLQ radi, loš test.
 - Management API (`:15672/api`) brojače osvježava sa ~1s zakašnjenja — ne
   zaključivati "poruka nije stigla" odmah poslije slanja.
+- **Ne pokretati `mvnw test` dok `spring-boot:run` radi iz istog `target/`** —
+  `target/classes` je nestao usred testova (ClassNotFound na sve strane).
+  Ugasi backend, pa `mvnw clean test`.
+- **Testcontainers: singleton kontejneri u static bloku**, ne `@Container` —
+  `@Container` ih gasi poslije svake klase, a Spring kešira kontekst koji
+  onda pokazuje na mrtav kontejner.
+- **Surefire `.txt` ne broji `@Nested` testove** (piše `Tests run: 0`) —
+  gledaj `TEST-*.xml` ili ukupni zbir.
 
 ## Dug koji stoji
 
-1. **`ticket.user_id` ne postoji** → `cancel` dozvoljava otkazivanje tuđeg
-   ticketa. Treba migracija `V3__ticket_user.sql` (nullable FK). Sigurnosna rupa.
-2. **Nema README-a** — za portfolio je to prvo što se otvori.
-3. `pom.xml.boot4.bak` je ostatak, može se obrisati.
-4. Testni podaci u `queue_db` pomiješani sa pravim.
-5. `skip` i `requeue` su dvije operacije (`CALLED→SKIPPED`, `SKIPPED→WAITING`) —
-   odluka je li ih spojiti u jednu nije donesena.
+1. Testni podaci u lokalnoj `queue_db` pomiješani sa pravim (compose ima svoju,
+   čistu bazu u volume-u `postgres_data`).
+2. `skip` i `requeue` su dvije operacije — odluka je li ih spojiti nije donesena.
+
+Riješeno u V7: `ticket.user_id` (V4 migracija, `cancel` provjerava vlasnika),
+README, `pom.xml.boot4.bak` obrisan.
 
 ## Stil rada koji je funkcionisao
 

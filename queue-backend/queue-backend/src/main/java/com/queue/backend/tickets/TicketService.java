@@ -5,6 +5,7 @@ import java.time.OffsetDateTime;
 import java.util.List;
 
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -13,6 +14,8 @@ import com.queue.backend.common.NotFoundException;
 import com.queue.backend.config.CacheConfig;
 import com.queue.backend.queues.Queue;
 import com.queue.backend.queues.QueueService;
+import com.queue.backend.users.User;
+import com.queue.backend.users.UserRepository;
 
 @Service
 public class TicketService {
@@ -21,15 +24,18 @@ public class TicketService {
     private final QueueService queueService;
     private final TicketEventPublisher events;
     private final QueueTicketsCache cache;
+    private final UserRepository users;
 
     public TicketService(TicketRepository repository,
                          QueueService queueService,
                          TicketEventPublisher events,
-                         QueueTicketsCache cache) {
+                         QueueTicketsCache cache,
+                         UserRepository users) {
         this.repository = repository;
         this.queueService = queueService;
         this.events = events;
         this.cache = cache;
+        this.users = users;
     }
 
     // ---------------------------------------------------------------
@@ -43,8 +49,12 @@ public class TicketService {
      * Bez lockinga su dvije od tri musterije dobijale gresku umjesto broja
      * (vidi DOKAZ-race-condition.md). Zato red zakljucavamo prvi.
      */
+    /**
+     * @param email ko uzima broj (iz tokena); null = bez vlasnika
+     *              (salter izdaje za nekoga bez naloga).
+     */
     @Transactional
-    public TicketResponse create(Long queueId) {
+    public TicketResponse create(Long queueId, String email) {
         // FOR UPDATE: sve ostale niti koje traze OVAJ red cekaju dok
         // ova transakcija ne zavrsi. Ostali redovi nisu zakljucani -
         // dom zdravlja i banka se ne blokiraju medjusobno.
@@ -67,6 +77,11 @@ public class TicketService {
         ticket.setSequenceNo(sljedeci);
         ticket.setIssuedDate(danas);
         ticket.setStatus(TicketStatus.WAITING);
+        if (email != null) {
+            // orElse(null), ne orElseThrow: token je vec validiran u filteru,
+            // a i bez vlasnika ticket je ispravan.
+            ticket.setUser(users.findByEmail(email).orElse(null));
+        }
 
         Ticket snimljen = repository.save(ticket);
 
@@ -142,10 +157,29 @@ public class TicketService {
         return promijeni(getEntity(ticketId), TicketStatus.WAITING);
     }
 
-    /** Musterija odustaje. */
+    /**
+     * Musterija odustaje.
+     *
+     * Provjera vlasnistva je OVDJE, ne u kontroleru: pravilo "otkazujes
+     * samo svoj" je poslovno pravilo i mora vaziti odakle god poziv dosao.
+     *
+     * @param email ko trazi otkazivanje
+     * @param osoblje osoblje smije otkazati bilo ciji (musterija je
+     *                odustala na salteru, papir je izgubljen...)
+     */
     @Transactional
-    public TicketResponse cancel(Long ticketId) {
-        return promijeni(getEntity(ticketId), TicketStatus.CANCELLED);
+    public TicketResponse cancel(Long ticketId, String email, boolean osoblje) {
+        Ticket ticket = getEntity(ticketId);
+
+        User vlasnik = ticket.getUser();
+        boolean tudji = vlasnik != null && !vlasnik.getEmail().equals(email);
+        if (tudji && !osoblje) {
+            // AccessDeniedException -> 403 kroz GlobalExceptionHandler.
+            // Ne otkrivamo ciji je - samo da nije tvoj.
+            throw new AccessDeniedException("Ticket " + ticket.getNumber() + " nije tvoj");
+        }
+
+        return promijeni(ticket, TicketStatus.CANCELLED);
     }
 
     // ---------------------------------------------------------------

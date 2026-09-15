@@ -5,6 +5,7 @@ import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -37,7 +38,7 @@ public class TicketController {
     public TicketResponse create(@PathVariable Long queueId, Authentication auth) {
         // auth.getName() je email iz tokena (subject) - jedinstven po nalogu.
         rateLimiter.provjeri(auth.getName());
-        return ticketService.create(queueId);
+        return ticketService.create(queueId, auth.getName());
     }
 
     @GetMapping("/api/queues/{queueId}/tickets")
@@ -50,12 +51,14 @@ public class TicketController {
         return ticketService.findById(id);
     }
 
-    // Otkazivanje smije svaki prijavljeni.
-    // TODO: ticket jos ne zna ciji je, pa se ne moze provjeriti da otkazujes
-    // SVOJ ticket. Vidi napomenu o ticket.user_id.
+    // Svaki prijavljeni smije pokusati; servis provjerava da je ticket
+    // njegov (osoblje smije bilo ciji).
     @PostMapping("/api/tickets/{id}/cancel")
-    public TicketResponse cancel(@PathVariable Long id) {
-        return ticketService.cancel(id);
+    public TicketResponse cancel(@PathVariable Long id, Authentication auth) {
+        boolean osoblje = auth.getAuthorities().stream()
+                .map(GrantedAuthority::getAuthority)
+                .anyMatch(a -> a.equals("ROLE_EMPLOYEE") || a.equals("ROLE_MANAGER") || a.equals("ROLE_ADMIN"));
+        return ticketService.cancel(id, auth.getName(), osoblje);
     }
 
     // ---------- salter ----------

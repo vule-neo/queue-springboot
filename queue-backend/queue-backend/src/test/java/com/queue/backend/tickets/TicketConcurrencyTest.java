@@ -14,8 +14,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 
+import com.queue.backend.AbstractIntegrationTest;
 import com.queue.backend.locations.Location;
 import com.queue.backend.locations.LocationRepository;
 import com.queue.backend.organizations.Organization;
@@ -32,9 +32,8 @@ import com.queue.backend.servicetypes.ServiceTypeRepository;
  * u JEDNOJ transakciji, pa se niti ne bi ni nadmetale - trka se ne bi
  * mogla reprodukovati. Zato i ciscenje radimo rucno u @AfterEach.
  */
-@SpringBootTest
 @DisplayName("Concurrency: izdavanje broja i pozivanje sljedeceg")
-class TicketConcurrencyTest {
+class TicketConcurrencyTest extends AbstractIntegrationTest {
 
     private static final int BROJ_NITI = 20;
 
@@ -96,7 +95,7 @@ class TicketConcurrencyTest {
 
         pokreniParalelno(() -> {
             try {
-                brojevi.add(ticketService.create(red.getId()).number());
+                brojevi.add(ticketService.create(red.getId(), null).number());
             } catch (Exception e) {
                 greske.add(e.getClass().getSimpleName());
             }
@@ -121,7 +120,7 @@ class TicketConcurrencyTest {
     void pozivanjeSljedeceg() throws Exception {
         // Prvo mirno izdamo 20 brojeva, jedan po jedan - ovdje trka ne smeta.
         for (int i = 0; i < BROJ_NITI; i++) {
-            ticketService.create(red.getId());
+            ticketService.create(red.getId(), null);
         }
 
         ConcurrentLinkedQueue<Long> pozvaniIdevi = new ConcurrentLinkedQueue<>();

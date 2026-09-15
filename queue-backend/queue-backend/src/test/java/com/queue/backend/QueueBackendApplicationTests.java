@@ -1,10 +1,8 @@
 package com.queue.backend;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.test.context.SpringBootTest;
 
-@SpringBootTest
-class QueueBackendApplicationTests {
+class QueueBackendApplicationTests extends AbstractIntegrationTest {
 
 	@Test
 	void contextLoads() {

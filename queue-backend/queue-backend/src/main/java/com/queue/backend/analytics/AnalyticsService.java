@@ -100,7 +100,13 @@ public class AnalyticsService {
             obrada = Math.round(istorija);
             basis = WaitEstimateResponse.Basis.HISTORY;
         } else {
-            obrada = defaultServiceSeconds;
+            // Bez istorije: menadzer je pri kreiranju usluge unio koliko
+            // obrada "obicno" traje - to je bolja pretpostavka od globalne
+            // konstante. Konstanta ostaje kao zadnja linija.
+            var usluga = t.getQueue().getServiceType();
+            obrada = usluga != null && usluga.getAvgDurationMinutes() > 0
+                    ? usluga.getAvgDurationMinutes() * 60L
+                    : defaultServiceSeconds;
             basis = WaitEstimateResponse.Basis.DEFAULT;
         }
 

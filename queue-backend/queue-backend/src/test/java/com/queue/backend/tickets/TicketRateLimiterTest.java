@@ -8,8 +8,8 @@ import java.util.UUID;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 
+import com.queue.backend.AbstractIntegrationTest;
 import com.queue.backend.common.RateLimitExceededException;
 
 /**
@@ -20,9 +20,8 @@ import com.queue.backend.common.RateLimitExceededException;
  * ni medjusobno ni sa ostacima od proslog pokretanja (kljuc bi ionako
  * istekao za minutu, ali ne zelimo zavisiti od toga).
  */
-@SpringBootTest
 @DisplayName("Rate limit: 5 brojeva u minuti po korisniku")
-class TicketRateLimiterTest {
+class TicketRateLimiterTest extends AbstractIntegrationTest {
 
     private static final int LIMIT = 5;
 

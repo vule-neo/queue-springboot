@@ -12,8 +12,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
 
+import com.queue.backend.AbstractIntegrationTest;
 import com.queue.backend.config.RabbitConfig;
 import com.queue.backend.tickets.TicketEvent;
 import com.queue.backend.tickets.TicketResponse;
@@ -31,9 +31,8 @@ import com.queue.backend.tickets.TicketStatus;
  * bazu - await() ceka dok se prvi red ne pojavi, pa jos malo da bi se
  * eventualni drugi stigao upisati.
  */
-@SpringBootTest
 @DisplayName("Analytics consumer: isti event dvaput = jedan red")
-class AnalyticsIdempotencyTest {
+class AnalyticsIdempotencyTest extends AbstractIntegrationTest {
 
     @Autowired RabbitTemplate rabbitTemplate;
     @Autowired TicketEventLogRepository repository;

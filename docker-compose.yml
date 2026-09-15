@@ -1,0 +1,102 @@
+# Cijeli sistem jednom komandom:
+#   cp .env.example .env   (i popuni tajne)
+#   docker compose up --build
+#
+# Frontend: http://localhost        Backend: http://localhost:8080
+# RabbitMQ UI: http://localhost:15672 (guest/guest)
+#
+# Servisi se vide medjusobno po IMENU (postgres, redis, rabbitmq, backend) -
+# compose podize privatnu mrezu sa DNS-om. Zato backend nema "localhost"
+# nego "postgres" u JDBC URL-u.
+
+services:
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: queue_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?postavi POSTGRES_PASSWORD u .env}
+    volumes:
+      # Named volume: podaci prezive docker compose down (ali ne down -v).
+      # Postgres 18 image trazi mount na /var/lib/postgresql (ne /data) -
+      # sam napravi poddirektorijum po verziji, radi pg_upgrade.
+      - postgres_data:/var/lib/postgresql
+    # Port se namjerno NE objavljuje: bazi pristupa samo backend, kroz
+    # internu mrezu. (A i lokalni Postgres na 5432 bi se sudario.)
+    healthcheck:
+      # Backend ceka OVO, ne samo "kontejner je pokrenut": Postgres treba
+      # par sekundi da primi konekcije, a Flyway bi u medjuvremenu pao.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d queue_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    # Kao rabbitmq korisnik od starta: entrypoint kao root ostavlja
+    # .erlang.cookie root-u pa proces (rabbitmq) ne moze da ga procita
+    # i kontejner umre sa "eacces". Vidi CLAUDE.md.
+    user: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./queue-backend/queue-backend
+    # Spring "relaxed binding": SPRING_DATASOURCE_URL == spring.datasource.url.
+    # Env varijable imaju prednost nad application.properties, pa isti
+    # jar radi i lokalno (localhost) i u compose-u (imena servisa).
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/queue_db
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_RABBITMQ_HOST: rabbitmq
+      APP_JWT_SECRET: ${APP_JWT_SECRET:?postavi APP_JWT_SECRET u .env}
+      SPRING_JPA_SHOW_SQL: "false"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      # Javni endpoint bez tokena - 200 znaci da je Spring gore i baza radi.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/api/queues/1/tickets || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  frontend:
+    build: ./frontend/frontend
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
