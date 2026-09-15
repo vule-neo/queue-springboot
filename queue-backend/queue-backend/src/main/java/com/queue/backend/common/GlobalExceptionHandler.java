@@ -57,6 +57,15 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiError.of(ex.getMessage()));
     }
 
+    // Kvota potrosena. 429 + Retry-After header: standardan nacin da se
+    // klijentu kaze KOLIKO da saceka, a ne samo da ne moze.
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<ApiError> handleRateLimit(RateLimitExceededException ex) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header("Retry-After", String.valueOf(ex.getRetryAfterSeconds()))
+                .body(ApiError.of(ex.getMessage()));
+    }
+
     // Pukao constraint u bazi (npr. duplikat slug-a). 409, ne 500 -
     // nije greska servera nego sukob sa postojecim podacima.
     @ExceptionHandler(DataIntegrityViolationException.class)

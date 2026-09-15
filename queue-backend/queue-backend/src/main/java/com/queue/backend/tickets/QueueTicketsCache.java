@@ -1,5 +1,7 @@
 package com.queue.backend.tickets;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
 import org.springframework.stereotype.Component;
@@ -25,6 +27,8 @@ import com.queue.backend.config.CacheConfig;
 @Component
 public class QueueTicketsCache {
 
+    private static final Logger log = LoggerFactory.getLogger(QueueTicketsCache.class);
+
     private final CacheManager cacheManager;
 
     public QueueTicketsCache(CacheManager cacheManager) {
@@ -47,8 +51,18 @@ public class QueueTicketsCache {
 
     private void evict(Long queueId) {
         Cache cache = cacheManager.getCache(CacheConfig.QUEUE_TICKETS);
-        if (cache != null) {
+        if (cache == null) {
+            return;
+        }
+        try {
             cache.evict(queueId);
+        } catch (RuntimeException e) {
+            // CacheErrorHandler iz CacheConfig-a stiti SAMO anotacije
+            // (@Cacheable...). Direktan poziv na Cache ide mimo njega, pa
+            // moramo sami. Bez ovoga: Redis padne -> afterCommit pukne ->
+            // klijent dobije 500 za ticket koji je VEC upisan u bazu.
+            // Cijena: unos ostaje u kesu do isteka TTL-a (30s).
+            log.warn("Evict nije uspio za red {}, ekran moze kasniti do TTL: {}", queueId, e.getMessage());
         }
     }
 }

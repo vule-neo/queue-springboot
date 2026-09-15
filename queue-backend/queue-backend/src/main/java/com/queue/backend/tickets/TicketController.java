@@ -4,6 +4,7 @@ import java.util.List;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -18,17 +19,24 @@ import org.springframework.web.bind.annotation.RestController;
 public class TicketController {
 
     private final TicketService ticketService;
+    private final TicketRateLimiter rateLimiter;
 
-    public TicketController(TicketService ticketService) {
+    public TicketController(TicketService ticketService, TicketRateLimiter rateLimiter) {
         this.ticketService = ticketService;
+        this.rateLimiter = rateLimiter;
     }
 
     // ---------- musterija ----------
 
     // Nema @RequestBody: queueId je u putanji, broj racuna server.
+    // Rate limit je u kontroleru, ne u servisu: to je pravilo za HTTP
+    // pozivaoca, ne poslovno pravilo. Ticket koji u V5 napravi Rabbit
+    // listener ili zakazani posao ne smije biti odbijen zbog kvote.
     @PostMapping("/api/queues/{queueId}/tickets")
     @ResponseStatus(HttpStatus.CREATED)
-    public TicketResponse create(@PathVariable Long queueId) {
+    public TicketResponse create(@PathVariable Long queueId, Authentication auth) {
+        // auth.getName() je email iz tokena (subject) - jedinstven po nalogu.
+        rateLimiter.provjeri(auth.getName());
         return ticketService.create(queueId);
     }
 
