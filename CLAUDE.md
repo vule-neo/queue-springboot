@@ -150,25 +150,36 @@ Ovaj dio se dopisuje kako projekat napreduje — čitaj ga prvo.
 
 ```
 ✅ V1  CRUD skeleton              ✅ V3  WebSocket real-time
-✅ V2  Security + JWT + state machine    🔸 V4  Concurrency (locking gotov, Redis blokiran)
+✅ V2  Security + JWT + state machine    ✅ V4  Concurrency + Redis (locking, keš, rate limit)
 ⬜ V5  RabbitMQ    ⬜ V6  Analytics    ⬜ V7  Docker + testovi + CI/CD
 ```
 
-Git: `main`, dva commita (`4e4f845` V1–V3, `f870362` V4 locking).
+Git: `main` — `4e4f845` V1–V3, `f870362` V4 locking, `dffe100` V4 Redis keš,
+`db6923c` V4 rate limiting.
 
 ## Sljedeći korak
 
-**Korisnik instalira Docker Desktop** (restart u toku). Kad proradi:
+**V5 RabbitMQ.** Docker Desktop radi, pa se RabbitMQ diže isto kao Redis:
 
 ```bash
-docker --version && docker run --rm hello-world
+docker run -d -p 5672:5672 -p 15672:15672 --name rabbitmq rabbitmq:3-management
 ```
 
-Onda: Redis (`docker run -d -p 6379:6379 --name redis redis:7-alpine`) → `@Cacheable`
-za javni ekran → rate limiting (Bucket4j) → time je V4 gotov → V5 RabbitMQ.
+(15672 = web UI, `guest`/`guest`). Redoslijed iz plana: Spring AMQP setup →
+event DTO-ovi → producer u `TicketEventPublisher` (ta klasa je namjerno
+odvojena od `TicketService` baš za ovo) → `@RabbitListener` u `notifications`
+→ analytics consumer.
 
-Ako Docker ne prođe, alternativa je preskočiti na **V6 Analytics** — jedini
-preostali dio koji ne traži novu infrastrukturu.
+## Docker — šta mora biti upaljeno
+
+Docker Desktop je instaliran **po korisniku**
+(`%LOCALAPPDATA%\Programs\DockerDesktop\Docker Desktop.exe`), ne u Program
+Files. Ako `docker ps` javi "cannot find the file specified" → Desktop nije
+pokrenut, ne fali instalacija. Kontejneri:
+
+```bash
+docker start redis        # 6379 — keš + rate limit; app radi i bez njega (sporije, bez limita)
+```
 
 ## Kako se pokreće
 
@@ -199,6 +210,17 @@ cd frontend\frontend ; npx ng serve
 - **Lock van transakcije ne vrijedi ništa** — otud `propagation = MANDATORY`
   na `QueueService.getEntityForUpdate`.
 - Port 8080 / 4200 ostaju zauzeti ako se stara instanca ne ugasi.
+- **Lettuce podrazumijevano čeka 60s** i dok je veza pukla *stavlja komande u
+  red*. "Graciozno degradiranje" preko `CacheErrorHandler`-a je bilo 60s
+  visenja po zahtjevu. Treba `spring.data.redis.timeout=1s` +
+  `DisconnectedBehavior.REJECT_COMMANDS`.
+- **`CacheErrorHandler` štiti samo anotacije.** Direktan `cache.evict()` iz
+  `afterCommit` ide mimo njega → pad Redisa je vraćao 500 za ticket koji je
+  *već commitovan*. Svaki ručni poziv na `Cache` treba svoj try/catch.
+- **Keš se briše poslije commita**, ne `@CacheEvict`-om: inače konkurentni
+  čitač u prozoru prije commita vrati staro stanje u keš.
+- Gasi Redis (`docker stop redis`) i probaj **i POST, ne samo GET** — bug
+  iznad se vidio tek na POST-u.
 
 ## Dug koji stoji
 
