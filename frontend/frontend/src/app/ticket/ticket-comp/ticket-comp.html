@@ -14,7 +14,13 @@
 }
 
 @if (zadnjiBroj(); as broj) {
-  <p>Tvoj broj: <strong>{{ broj }}</strong></p>
+  <p>
+    Tvoj broj: <strong>{{ broj }}</strong>
+    @if (procjena(); as p) {
+      &mdash; ispred tebe: {{ p.ahead }}, cekanje {{ procjenaTekst(p) }}
+      @if (p.basis === 'DEFAULT') { <small>(gruba procjena)</small> }
+    }
+  </p>
 }
 
 @if (greska(); as poruka) {

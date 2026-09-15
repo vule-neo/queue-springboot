@@ -36,6 +36,11 @@ export class AuthService {
     return u === 'EMPLOYEE' || u === 'MANAGER' || u === 'ADMIN';
   });
 
+  jeMenadzer = computed(() => {
+    const u = this.ulogaSig();
+    return u === 'MANAGER' || u === 'ADMIN';
+  });
+
   login(email: string, password: string): Observable<AuthResponse> {
     return this.http.post<AuthResponse>('/api/auth/login', { email, password })
         .pipe(tap(odgovor => this.spremi(odgovor)));

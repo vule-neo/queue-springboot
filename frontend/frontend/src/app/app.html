@@ -2,6 +2,7 @@
   <strong>Queue Management</strong>
   @if (auth.jePrijavljen()) {
     <span> &mdash; {{ auth.email() }} ({{ auth.uloga() }}) </span>
+    @if (auth.jeMenadzer()) { <a routerLink="/analytics">statistika</a> }
     <button (click)="auth.logout()">Odjavi se</button>
   }
 </header>

@@ -16,4 +16,9 @@ public interface TicketRepository extends JpaRepository<Ticket, Long> {
     // koji jos cekaju. Ovo je upit koji ce V4 morati da zakljuca.
     Optional<Ticket> findFirstByQueueIdAndIssuedDateAndStatusOrderBySequenceNoAsc(
             Long queueId, LocalDate issuedDate, TicketStatus status);
+
+    // Koliko ih ceka ISPRED zadatog: isti red, isti dan, manji redni broj,
+    // jos WAITING. Ulaz za procjenu cekanja (V6).
+    long countByQueueIdAndIssuedDateAndStatusAndSequenceNoLessThan(
+            Long queueId, LocalDate issuedDate, TicketStatus status, int sequenceNo);
 }

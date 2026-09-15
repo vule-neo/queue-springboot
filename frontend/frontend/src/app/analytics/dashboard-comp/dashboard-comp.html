@@ -1,0 +1,54 @@
+<a routerLink="/">&larr; nazad na redove</a>
+
+<h2>Statistika</h2>
+
+<label>
+  Dan:
+  <input type="date" [value]="datum()" (change)="promijeniDatum($event)" />
+</label>
+
+@if (greska(); as poruka) {
+  <p style="color: crimson">{{ poruka }}</p>
+}
+
+<table border="1" cellpadding="4" style="border-collapse: collapse; margin-top: 1em">
+  <thead>
+    <tr>
+      <th>Red</th>
+      <th>Izdato</th>
+      <th>Ceka</th>
+      <th>U obradi</th>
+      <th>Zavrseno</th>
+      <th>Otkazano</th>
+      <th>Nije dosao</th>
+      <th>Prosj. cekanje</th>
+      <th>Prosj. obrada</th>
+    </tr>
+  </thead>
+  <tbody>
+    @for (q of stats(); track q.queueId) {
+      <tr [style.font-weight]="q.queueId === izabraniRed() ? 'bold' : 'normal'"
+          (click)="izaberi(q.queueId)" style="cursor: pointer">
+        <td>#{{ q.queueId }} ({{ q.prefix }})</td>
+        <td>{{ q.issued }}</td>
+        <td>{{ q.waiting }}</td>
+        <td>{{ q.inProgress }}</td>
+        <td>{{ q.completed }}</td>
+        <td>{{ q.cancelled }}</td>
+        <td>{{ q.noShow }}</td>
+        <td>{{ trajanje(q.avgWaitSeconds) }}</td>
+        <td>{{ trajanje(q.avgServiceSeconds) }}</td>
+      </tr>
+    } @empty {
+      <tr><td colspan="9">Nema redova.</td></tr>
+    }
+  </tbody>
+</table>
+
+<p><small>Klikni red za grafikon.</small></p>
+
+@if (izabraniRed() !== null) {
+  <div style="max-width: 800px">
+    <canvas #grafikon></canvas>
+  </div>
+}

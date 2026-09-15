@@ -3,6 +3,8 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { Observable } from 'rxjs';
 
+import { AnalyticsService } from '../../analytics/analytics-service';
+import { WaitEstimate } from '../../analytics/analytics.model';
 import { AuthService } from '../../auth/auth-service';
 import { QueueSocketService } from '../queue-socket-service';
 import { TicketService } from '../ticket-service';
@@ -17,6 +19,7 @@ import { Ticket } from '../ticket.model';
 export class TicketComp implements OnInit {
 
   private ticketService = inject(TicketService);
+  private analytics = inject(AnalyticsService);
   private socket = inject(QueueSocketService);
   private route = inject(ActivatedRoute);
   private destroyRef = inject(DestroyRef);
@@ -26,6 +29,8 @@ export class TicketComp implements OnInit {
   queueId = 0;
   tickets = signal<Ticket[]>([]);
   zadnjiBroj = signal<string | null>(null);
+  mojTicketId: number | null = null;
+  procjena = signal<WaitEstimate | null>(null);
   greska = signal<string | null>(null);
   uzivo = signal(false);
 
@@ -43,6 +48,8 @@ export class TicketComp implements OnInit {
         .subscribe(dogadjaj => {
           this.uzivo.set(true);
           this.primi(dogadjaj.ticket);
+          // Svaka promjena u redu mijenja i koliko je ispred mene.
+          this.osvjeziProcjenu();
         });
   }
 
@@ -67,9 +74,25 @@ export class TicketComp implements OnInit {
     this.greska.set(null);
     this.ticketService.uzmiBroj(this.queueId).subscribe({
       // Listu vise ne dohvatamo ponovo - stici ce kroz WebSocket.
-      next: noviTicket => this.zadnjiBroj.set(noviTicket.number),
+      next: noviTicket => {
+        this.zadnjiBroj.set(noviTicket.number);
+        this.mojTicketId = noviTicket.id;
+        this.osvjeziProcjenu();
+      },
       error: g => this.greska.set(g.error?.message ?? 'Greska'),
     });
+  }
+
+  private osvjeziProcjenu(): void {
+    if (this.mojTicketId === null) { return; }
+    this.analytics.estimate(this.mojTicketId).subscribe(p => this.procjena.set(p));
+  }
+
+  /** "oko 12 min" / "manje od minute" / "na redu si". */
+  procjenaTekst(p: WaitEstimate): string {
+    if (p.status !== 'WAITING') { return 'na redu si'; }
+    if (p.estimatedWaitSeconds < 60) { return 'manje od minute'; }
+    return `oko ${Math.round(p.estimatedWaitSeconds / 60)} min`;
   }
 
   pozoviSljedeceg(): void {
