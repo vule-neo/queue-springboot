@@ -151,24 +151,19 @@ Ovaj dio se dopisuje kako projekat napreduje — čitaj ga prvo.
 ```
 ✅ V1  CRUD skeleton              ✅ V3  WebSocket real-time
 ✅ V2  Security + JWT + state machine    ✅ V4  Concurrency + Redis (locking, keš, rate limit)
-⬜ V5  RabbitMQ    ⬜ V6  Analytics    ⬜ V7  Docker + testovi + CI/CD
+✅ V5  RabbitMQ    ⬜ V6  Analytics    ⬜ V7  Docker + testovi + CI/CD
 ```
 
 Git: `main` — `4e4f845` V1–V3, `f870362` V4 locking, `dffe100` V4 Redis keš,
-`db6923c` V4 rate limiting.
+`db6923c` V4 rate limiting, `387ca87` V5 RabbitMQ.
 
 ## Sljedeći korak
 
-**V5 RabbitMQ.** Docker Desktop radi, pa se RabbitMQ diže isto kao Redis:
-
-```bash
-docker run -d -p 5672:5672 -p 15672:15672 --name rabbitmq rabbitmq:3-management
-```
-
-(15672 = web UI, `guest`/`guest`). Redoslijed iz plana: Spring AMQP setup →
-event DTO-ovi → producer u `TicketEventPublisher` (ta klasa je namjerno
-odvojena od `TicketService` baš za ovo) → `@RabbitListener` u `notifications`
-→ analytics consumer.
+**V6 Analytics.** Sirovina već postoji: `ticket_event_log` (V5 analytics
+consumer puni jedan red po događaju, sa `occurred_at` i `status`). Korak 1 iz
+plana (`QueueEvent` audit tabela) je time gotov. Ide: wait time V1 (formula
+on-the-fly) → `GET /analytics/today` (JPQL agregacije nad `ticket_event_log`)
+→ wait time V2 (prosjek iz istorije) → Angular grafikoni.
 
 ## Docker — šta mora biti upaljeno
 
@@ -179,7 +174,13 @@ pokrenut, ne fali instalacija. Kontejneri:
 
 ```bash
 docker start redis        # 6379 — keš + rate limit; app radi i bez njega (sporije, bez limita)
+docker start rabbitmq     # 5672 AMQP, 15672 web UI (guest/guest); app radi i bez njega (eventi se gube)
 ```
+
+RabbitMQ kontejner ima named volume `rabbitmq_data`. Prvi `docker run` je pao
+sa `.erlang.cookie: eacces` (fajl root-ov, proces `rabbitmq`) — popravljeno
+jednokratno sa `chown rabbitmq:rabbitmq` u volume-u. Ako se ikad pravi novi
+kontejner, isto ponoviti.
 
 ## Kako se pokreće
 
@@ -221,6 +222,16 @@ cd frontend\frontend ; npx ng serve
   čitač u prozoru prije commita vrati staro stanje u keš.
 - Gasi Redis (`docker stop redis`) i probaj **i POST, ne samo GET** — bug
   iznad se vidio tek na POST-u.
+- **Rabbit šalje poslije commita**, ne iz servisa direktno:
+  `objavi()` → Spring event → `@TransactionalEventListener(AFTER_COMMIT)` →
+  WebSocket + Rabbit. Inače ekran/potrošač vide ticket koji je rollbackovan.
+- **`IdempotencyGuard` marker mora biti u istoj transakciji kao obrada**
+  (`MANDATORY`). Sa `REQUIRES_NEW` bi marker ostao poslije neuspjele obrade i
+  event bi bio izgubljen.
+- **`event_id` je `VARCHAR(36)`** — tačno UUID. Test sa prefiksom `"test-"`
+  je pao na dužini, poruka otišla u DLQ. Dobar dokaz da DLQ radi, loš test.
+- Management API (`:15672/api`) brojače osvježava sa ~1s zakašnjenja — ne
+  zaključivati "poruka nije stigla" odmah poslije slanja.
 
 ## Dug koji stoji
 
