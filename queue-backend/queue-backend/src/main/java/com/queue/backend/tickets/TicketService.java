@@ -4,11 +4,13 @@ import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.List;
 
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.queue.backend.common.InvalidStateTransitionException;
 import com.queue.backend.common.NotFoundException;
+import com.queue.backend.config.CacheConfig;
 import com.queue.backend.queues.Queue;
 import com.queue.backend.queues.QueueService;
 
@@ -18,13 +20,16 @@ public class TicketService {
     private final TicketRepository repository;
     private final QueueService queueService;
     private final TicketEventPublisher events;
+    private final QueueTicketsCache cache;
 
     public TicketService(TicketRepository repository,
                          QueueService queueService,
-                         TicketEventPublisher events) {
+                         TicketEventPublisher events,
+                         QueueTicketsCache cache) {
         this.repository = repository;
         this.queueService = queueService;
         this.events = events;
+        this.cache = cache;
     }
 
     // ---------------------------------------------------------------
@@ -69,6 +74,7 @@ public class TicketService {
         // promjena dodje iz WebSocket-a, Rabbit listenera (V5) ili zakazanog
         // posla - a ne samo iz HTTP zahtjeva.
         events.objavi(TicketEvent.izdat(snimljen));
+        cache.evictAfterCommit(queueId);
 
         return TicketResponse.from(snimljen);
     }
@@ -146,6 +152,12 @@ public class TicketService {
     // Citanje
     // ---------------------------------------------------------------
 
+    /**
+     * Jedini kesirani upit: gadja ga javni ekran bez tokena, odgovor je isti
+     * za sve, a mijenja se samo kroz create() i promijeni() - obje brisu
+     * unos. Kljuc je queueId, pa promjena u jednom redu ne dira ostale.
+     */
+    @Cacheable(cacheNames = CacheConfig.QUEUE_TICKETS, key = "#queueId")
     @Transactional(readOnly = true)
     public List<TicketResponse> findByQueue(Long queueId) {
         return repository
@@ -195,6 +207,7 @@ public class TicketService {
         // Bez save(): ticket je ucitan u ovoj transakciji, dirty checking
         // sam posalje UPDATE na kraju.
         events.objavi(TicketEvent.promijenjen(ticket));
+        cache.evictAfterCommit(ticket.getQueue().getId());
 
         return TicketResponse.from(ticket);
     }
