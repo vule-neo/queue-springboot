@@ -34,13 +34,16 @@ public class TicketService {
     /**
      * Izdaje sljedeci broj u redu.
      *
-     * PAZNJA: citanje lastNumber pa upis lastNumber+1 nije atomicno.
-     * Dva istovremena zahtjeva mogu dobiti isti broj. Namjerno ostavljeno -
-     * V4 tu gresku prvo dokazuje testom, pa je rjesava lockingom.
+     * Brojac lastNumber je tacka nadmetanja: citanje pa upis nije atomicno.
+     * Bez lockinga su dvije od tri musterije dobijale gresku umjesto broja
+     * (vidi DOKAZ-race-condition.md). Zato red zakljucavamo prvi.
      */
     @Transactional
     public TicketResponse create(Long queueId) {
-        Queue queue = queueService.getEntity(queueId);
+        // FOR UPDATE: sve ostale niti koje traze OVAJ red cekaju dok
+        // ova transakcija ne zavrsi. Ostali redovi nisu zakljucani -
+        // dom zdravlja i banka se ne blokiraju medjusobno.
+        Queue queue = queueService.getEntityForUpdate(queueId);
 
         LocalDate danas = LocalDate.now();
 
@@ -74,20 +77,27 @@ public class TicketService {
     // Zivotni ciklus
     // ---------------------------------------------------------------
 
-    /** Pozovi sljedeceg koji ceka u ovom redu danas. */
+    /**
+     * Pozovi sljedeceg koji ceka u ovom redu danas.
+     *
+     * Zakljucavamo RED, ne ticket. Dva razloga:
+     *  1) time se svi pozivi za taj red poredaju u niz, pa dva saltera
+     *     ne mogu procitati isti ticket (prije popravke je 20 saltera
+     *     pozvalo samo 6 razlicitih ljudi)
+     *  2) i create() zakljucava red prvi - isti redoslijed zakljucavanja
+     *     svuda znaci da deadlock nije moguc
+     */
     @Transactional
     public TicketResponse callNext(Long queueId) {
-        // Postojanje reda provjeravamo posebno da bi 404 bio tacan:
-        // "red ne postoji" nije isto sto i "red je prazan".
-        queueService.getEntity(queueId);
+        // Ujedno i provjera postojanja: 404 "red ne postoji" nije isto
+        // sto i 404 "red je prazan".
+        queueService.getEntityForUpdate(queueId);
 
         Ticket sljedeci = repository
                 .findFirstByQueueIdAndIssuedDateAndStatusOrderBySequenceNoAsc(
                         queueId, LocalDate.now(), TicketStatus.WAITING)
                 .orElseThrow(() -> new NotFoundException("Nema nikoga u redu " + queueId));
 
-        // I ovdje je V4 problem: dva saltera mogu istovremeno procitati
-        // isti ticket i oba ga pozvati.
         return promijeni(sljedeci, TicketStatus.CALLED);
     }
 

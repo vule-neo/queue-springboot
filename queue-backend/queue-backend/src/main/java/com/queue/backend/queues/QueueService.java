@@ -3,6 +3,7 @@ package com.queue.backend.queues;
 import java.util.List;
 
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.queue.backend.common.NotFoundException;
@@ -53,10 +54,26 @@ public class QueueService {
                 .orElseThrow(() -> new NotFoundException("Red " + id + " ne postoji"));
     }
 
-    /** Sam entitet - TicketService ga treba da bi mijenjao brojac. */
+    /** Sam entitet, bez lockinga - za citanje. */
     @Transactional(readOnly = true)
     public Queue getEntity(Long id) {
         return repository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Red " + id + " ne postoji"));
+    }
+
+    /**
+     * Sam entitet, SA zakljucavanjem reda u bazi. Koristi se kad se red
+     * mijenja (izdavanje broja) ili kad se na osnovu njega bira ticket.
+     *
+     * MANDATORY: metoda se SMIJE zvati samo unutar vec otvorene transakcije.
+     * Lock vrijedi dok transakcija traje - da ova metoda otvori vlastitu
+     * transakciju, lock bi se pustio prije nego pozivalac stigne isto upisati,
+     * i ne bi vrijedio nista. Ovako takva greska pukne odmah, umjesto da
+     * tiho ne radi.
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Queue getEntityForUpdate(Long id) {
+        return repository.findWithLockById(id)
                 .orElseThrow(() -> new NotFoundException("Red " + id + " ne postoji"));
     }
 }
