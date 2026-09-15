@@ -140,3 +140,79 @@ Znanje: Docker osnove (image vs container, multi-stage build, compose networking
 ## Stack (za referencu)
 
 Spring Boot, Spring Security (JWT), Spring Data JPA, PostgreSQL, Flyway, Redis, RabbitMQ, WebSocket (STOMP), Angular, Docker/Docker Compose, JUnit + Mockito + Testcontainers.
+---
+
+# Trenutno stanje (15.09.2026.)
+
+Ovaj dio se dopisuje kako projekat napreduje — čitaj ga prvo.
+
+## Dokle smo stigli
+
+```
+✅ V1  CRUD skeleton              ✅ V3  WebSocket real-time
+✅ V2  Security + JWT + state machine    🔸 V4  Concurrency (locking gotov, Redis blokiran)
+⬜ V5  RabbitMQ    ⬜ V6  Analytics    ⬜ V7  Docker + testovi + CI/CD
+```
+
+Git: `main`, dva commita (`4e4f845` V1–V3, `f870362` V4 locking).
+
+## Sljedeći korak
+
+**Korisnik instalira Docker Desktop** (restart u toku). Kad proradi:
+
+```bash
+docker --version && docker run --rm hello-world
+```
+
+Onda: Redis (`docker run -d -p 6379:6379 --name redis redis:7-alpine`) → `@Cacheable`
+za javni ekran → rate limiting (Bucket4j) → time je V4 gotov → V5 RabbitMQ.
+
+Ako Docker ne prođe, alternativa je preskočiti na **V6 Analytics** — jedini
+preostali dio koji ne traži novu infrastrukturu.
+
+## Kako se pokreće
+
+```powershell
+# backend (port 8080)
+cd queue-backend\queue-backend ; .\mvnw.cmd spring-boot:run
+
+# frontend (port 4200, proxy na 8080)
+cd frontend\frontend ; npx ng serve
+```
+
+- Baza: PostgreSQL 18, `queue_db`, korisnik `postgres`. `psql` nije na PATH-u:
+  `C:\Program Files\PostgreSQL\18\bin\psql.exe`
+- Tajne (lozinka baze, JWT ključ) su u `application-local.properties` —
+  **nije u gitu**, šablon je `application-local.properties.example`
+- Test korisnik: `marko@test.com` / `tajnalozinka`, uloga `MANAGER`
+- Uloge se mijenjaju ručno: `UPDATE app_user SET role='EMPLOYEE' WHERE email=...`
+  (registracija uvijek daje `CUSTOMER`)
+
+## Naučeno na teži način — ne ponavljati
+
+- **`mvnw clean compile`** kad se ponašanje ne poklapa sa kodom. Inkrementalni
+  build zna vratiti `BUILD SUCCESS` nad starim `.class` fajlovima.
+- **`/error` mora biti `permitAll`.** `sendError()` okida ERROR dispatch koji
+  ponovo prolazi kroz security lanac; bez toga 403 bude pregažen sa 401.
+- **Concurrency test ne smije imati `@Transactional`** — sve bi bilo u jednoj
+  transakciji i trka se ne bi reprodukovala.
+- **Lock van transakcije ne vrijedi ništa** — otud `propagation = MANDATORY`
+  na `QueueService.getEntityForUpdate`.
+- Port 8080 / 4200 ostaju zauzeti ako se stara instanca ne ugasi.
+
+## Dug koji stoji
+
+1. **`ticket.user_id` ne postoji** → `cancel` dozvoljava otkazivanje tuđeg
+   ticketa. Treba migracija `V3__ticket_user.sql` (nullable FK). Sigurnosna rupa.
+2. **Nema README-a** — za portfolio je to prvo što se otvori.
+3. `pom.xml.boot4.bak` je ostatak, može se obrisati.
+4. Testni podaci u `queue_db` pomiješani sa pravim.
+5. `skip` i `requeue` su dvije operacije (`CALLED→SKIPPED`, `SKIPPED→WAITING`) —
+   odluka je li ih spojiti u jednu nije donesena.
+
+## Stil rada koji je funkcionisao
+
+- Prvo dokaži problem testom, pa ga rješavaj (V4 `DOKAZ-race-condition.md`).
+- Kod se piše modul po modul, vertikalno (entitet → repo → servis → DTO →
+  kontroler → curl test), ne sloj po sloj kroz sve entitete.
+- Provjera svake promjene stvarnim pokretanjem i curl-om, ne "trebalo bi da radi".
