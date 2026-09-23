@@ -1,0 +1,1680 @@
+<!doctype html>
+<html lang="bs">
+<head>
+<meta charset="utf-8">
+<title>Queue Management System — tehnička dokumentacija</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm; }
+  body { font-family: "Segoe UI", Arial, sans-serif; font-size: 10.5pt; line-height: 1.55; color: #1a1a1a; max-width: 100%; }
+  h1 { font-size: 22pt; border-bottom: 3px solid #333; padding-bottom: 6px; margin-top: 0; page-break-before: always; }
+  h1:first-of-type { page-break-before: avoid; }
+  h2 { font-size: 15pt; margin-top: 22px; border-bottom: 1px solid #bbb; padding-bottom: 3px; }
+  h3 { font-size: 12pt; margin-top: 16px; color: #222; }
+  h4 { font-size: 10.5pt; margin-top: 12px; margin-bottom: 4px; }
+  code { font-family: Consolas, "Courier New", monospace; font-size: 9pt; background: #f2f2f2; padding: 1px 3px; border-radius: 2px; }
+  pre { font-family: Consolas, "Courier New", monospace; font-size: 8.5pt; background: #f7f7f7; border-left: 3px solid #888;
+        padding: 8px 10px; overflow-x: auto; page-break-inside: avoid; line-height: 1.4; }
+  pre code { background: none; padding: 0; font-size: 8.5pt; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 9.5pt; page-break-inside: avoid; }
+  th, td { border: 1px solid #ccc; padding: 5px 7px; text-align: left; vertical-align: top; }
+  th { background: #eee; font-weight: 600; }
+  blockquote { border-left: 4px solid #d9534f; background: #fdf3f2; margin: 10px 0; padding: 8px 12px; }
+  blockquote.tip { border-left-color: #3c763d; background: #f0f7f0; }
+  blockquote.why { border-left-color: #31708f; background: #eef5f9; }
+  .toc { font-size: 10pt; }
+  .toc a { text-decoration: none; color: #1a1a1a; }
+  .toc ol { padding-left: 20px; }
+  .meta { color: #666; font-size: 9.5pt; }
+  hr { border: none; border-top: 1px solid #ddd; margin: 18px 0; }
+  .q { font-weight: 600; color: #31708f; margin-top: 12px; }
+  .nobreak { page-break-inside: avoid; }
+</style>
+</head>
+<body>
+
+<h1>Queue Management System</h1>
+<p class="meta">Tehnička dokumentacija projekta — arhitektura, kod, mehanizmi i priprema za intervju.<br>
+Spring Boot 3.5 · Java 21 · PostgreSQL 18 · Redis 7 · RabbitMQ 3 · Angular 20 · Docker</p>
+
+<blockquote class="tip">
+<strong>Kako čitati ovaj dokument.</strong> Dio I daje sliku cjeline. Dio II ide sloj po sloj
+(baza → entitet → repozitorij → servis → DTO → kontroler). Dio III je srž — sedam mehanizama
+koji čine razliku između „CRUD aplikacije" i sistema: state machine, security, real-time,
+concurrency, keš, poruke, statistika. Dio IV je infrastruktura i testiranje. Dio V su pitanja
+za intervju i rječnik.<br><br>
+Svako poglavlje ima isti raspored: <em>problem</em> → <em>rješenje</em> → <em>kod</em> →
+<em>zašto baš tako</em> → <em>šta kad pukne</em>.
+</blockquote>
+
+<h2>Sadržaj</h2>
+<div class="toc">
+<ol>
+  <li><strong>Dio I — Pregled</strong>
+    <ol>
+      <li>Domen: šta sistem radi</li>
+      <li>Arhitektura: modularni monolit</li>
+      <li>Tehnološki stack i zašto svaki alat</li>
+    </ol>
+  </li>
+  <li><strong>Dio II — Slojevi</strong>
+    <ol start="4">
+      <li>Baza podataka i Flyway</li>
+      <li>Entiteti i JPA/Hibernate</li>
+      <li>Repozitoriji (Spring Data JPA)</li>
+      <li>Servisi i transakcije</li>
+      <li>DTO-ovi i kontroleri</li>
+      <li>Obrada grešaka</li>
+    </ol>
+  </li>
+  <li><strong>Dio III — Mehanizmi</strong>
+    <ol start="10">
+      <li>State machine (životni ciklus ticketa)</li>
+      <li>Security: JWT, filter chain, uloge</li>
+      <li>WebSocket i STOMP (real-time)</li>
+      <li>Concurrency: race condition i pesimistički lock</li>
+      <li>Redis keš</li>
+      <li>Rate limiting (Bucket4j)</li>
+      <li>RabbitMQ: event-driven arhitektura i idempotency</li>
+      <li>Analytics: SQL agregacije i procjena čekanja</li>
+    </ol>
+  </li>
+  <li><strong>Dio IV — Infrastruktura</strong>
+    <ol start="18">
+      <li>Docker i Docker Compose</li>
+      <li>Testiranje: unit, Testcontainers, concurrency</li>
+      <li>CI/CD i nginx</li>
+    </ol>
+  </li>
+  <li><strong>Dio V — Intervju</strong>
+    <ol start="21">
+      <li>Pitanja i odgovori</li>
+      <li>Rječnik pojmova</li>
+      <li>Mapa fajlova</li>
+    </ol>
+  </li>
+</ol>
+</div>
+
+<h1>Dio I — Pregled</h1>
+
+<h2>1. Domen: šta sistem radi</h2>
+
+<p>Digitalizacija fizičkog čekanja u redu — dom zdravlja, šalteri, banka. Umjesto papirnog
+broja i vikanja „sljedeći", sistem nudi četiri pogleda na istu stvar:</p>
+
+<table>
+<tr><th>Akter</th><th>Šta radi</th><th>Tehnički</th></tr>
+<tr><td><strong>Mušterija</strong></td><td>uzme broj s telefona, vidi koliko je ispred nje i procjenu čekanja, otkazuje</td><td>REST + WebSocket, uloga <code>CUSTOMER</code></td></tr>
+<tr><td><strong>Šalter</strong></td><td>poziva sljedećeg, započinje/završava obradu, preskače, označava „nije došao"</td><td>REST, uloga <code>EMPLOYEE</code></td></tr>
+<tr><td><strong>Javni ekran</strong></td><td>prikazuje stanje reda u realnom vremenu, bez prijave</td><td>javni GET + WebSocket, keširan</td></tr>
+<tr><td><strong>Menadžer</strong></td><td>kreira redove, gleda dnevnu statistiku i grafikone</td><td>REST, uloga <code>MANAGER</code></td></tr>
+</table>
+
+<h3>Model domena</h3>
+<pre><code>organization   (Dom zdravlja)
+    └── location       (Centar, Filijala 2)
+            └── queue          (red čekanja, prefiks "A", brojač)
+                    └── ticket         (A001, A002, ... status, vremena)
+    └── service        (Opšta praksa, prosječno trajanje)
+</code></pre>
+
+<p><code>Queue</code> veže <code>Location</code> i <code>ServiceType</code>: jedan red = jedna usluga
+na jednoj lokaciji. Red drži brojač (<code>lastNumber</code>) i datum tog brojača
+(<code>lastNumberDate</code>) — brojač se resetuje svakog jutra.</p>
+
+<h3>Životni ciklus ticketa</h3>
+<pre><code>WAITING → CALLED → SERVING → COMPLETED
+WAITING → CANCELLED
+CALLED  → NO_SHOW
+CALLED  → SKIPPED → WAITING
+</code></pre>
+
+<h2>2. Arhitektura: modularni monolit</h2>
+
+<p>Jedan deployable proces, ali podijeljen u pakete kao da su zasebni servisi. Paketi:
+<code>organizations</code>, <code>locations</code>, <code>servicetypes</code>, <code>queues</code>,
+<code>tickets</code>, <code>users</code>, <code>notifications</code>, <code>analytics</code>,
+<code>common</code>, <code>config</code>.</p>
+
+<blockquote class="why">
+<strong>Zašto ne mikroservisi?</strong> Mikroservisi rješavaju probleme koje ovaj sistem nema
+(nezavisno skaliranje timova i dijelova, različiti jezici, izolacija deploya), a donose probleme
+koje bi bili stvarni: distribuirane transakcije, mrežne greške, pet repozitorija, pet pipelinea.
+Monolit s čistim granicama se može rascijepiti kad zatreba; mikroservisi napravljeni prerano
+se teško spajaju nazad. Ovo je i standardni odgovor na intervjuu: „počeo sam monolitom s
+modularnim granicama, jer je to jeftinije mijenjati".
+</blockquote>
+
+<h3>Slojevi</h3>
+<pre><code>Controller   HTTP: ko si (token), validacija ulaza, poziv servisa, DTO nazad.
+             NE zna poslovna pravila.
+   ↓
+Service      SVA pravila. Transakcije. Jedina tačka gdje se mijenja stanje.
+   ↓
+Repository   Upiti. Spring Data pravi implementaciju iz imena metode.
+   ↓
+Baza
+</code></pre>
+
+<blockquote class="why">
+<strong>Zašto su pravila u servisu, a ne u kontroleru?</strong> Jer kontroler nije jedini ulaz.
+U V5 je dodan RabbitMQ listener koji zove iste servise <em>bez HTTP zahtjeva</em>. Da je
+provjera prelaza stanja bila u kontroleru, taj put bi je zaobišao. Pravilo: ono što mora
+važiti uvijek ide u servis; ono što važi samo za HTTP pozivaoca (rate limit, čitanje uloge
+iz tokena) ostaje u kontroleru.
+</blockquote>
+
+<h3>Cjelokupna slika</h3>
+<pre><code>  Angular (customer / employee / display / dashboard)
+       │ REST + JWT                    │ STOMP over WebSocket
+       ▼                               ▼
+ ┌──────────────────── Spring Boot :8080 ─────────────────────┐
+ │ JwtAuthFilter → SecurityFilterChain → @PreAuthorize        │
+ │        ↓                                                    │
+ │  TicketService  ── state machine, @Transactional, FOR UPDATE│
+ │        │ objavi(event)                                      │
+ │        └─ poslije commita ─┬─► WebSocket /topic/queue/{id}  │
+ │                            └─► RabbitMQ ticket.events       │
+ │                                  ├─► NotificationListener   │
+ │                                  └─► AnalyticsListener      │
+ │  @Cacheable ─► Redis ◄─ Bucket4j (rate limit)               │
+ └────────────────────────────┬────────────────────────────────┘
+                              ▼
+                    PostgreSQL (Flyway V1–V4)
+</code></pre>
+
+<h2>3. Tehnološki stack i zašto svaki alat</h2>
+
+<table>
+<tr><th>Alat</th><th>Problem koji rješava</th><th>Alternativa i zašto nije</th></tr>
+<tr><td><strong>Spring Boot</strong></td><td>HTTP server, dependency injection, konfiguracija, auto-konfiguracija biblioteka</td><td>Quarkus/Micronaut (brži start, manja zajednica); čisti servlet (previše ručnog rada)</td></tr>
+<tr><td><strong>PostgreSQL</strong></td><td>trajno stanje, transakcije, relacije, <code>FOR UPDATE</code> lock</td><td>MySQL (slabiji SQL, nema <code>FILTER</code>); NoSQL (nema transakcija nad više redova)</td></tr>
+<tr><td><strong>Flyway</strong></td><td>verzionisana šema — svaka promjena je SQL fajl u gitu</td><td>Hibernate <code>ddl-auto=update</code> — nepredvidivo, ne radi migracije podataka, zabranjeno u produkciji</td></tr>
+<tr><td><strong>JPA/Hibernate</strong></td><td>mapiranje objekata na tabele, dirty checking, lock modovi</td><td>JDBC ručno (više koda); jOOQ (bolji za složen SQL, slabiji za CRUD)</td></tr>
+<tr><td><strong>Spring Security + jjwt</strong></td><td>autentikacija i autorizacija bez sesija</td><td>sesije u memoriji (ne skalira); OAuth2 server (overkill za jednu aplikaciju)</td></tr>
+<tr><td><strong>WebSocket/STOMP</strong></td><td>server gura promjene ekranu bez pollinga</td><td>polling svake sekunde (50 ekrana = 50 req/s bez razloga); SSE (jednosmjerno, dovoljno bi bilo)</td></tr>
+<tr><td><strong>Redis</strong></td><td>keš za javni ekran; brojači rate limita dijeljeni između instanci</td><td>keš u memoriji (<code>Caffeine</code>) — brži, ali ne dijeli se između instanci</td></tr>
+<tr><td><strong>RabbitMQ</strong></td><td>razdvajanje „desilo se" od „ko na to reaguje"; garancija isporuke</td><td>Kafka (za tokove događaja i replay, teža); Spring event (in-process, gubi se pri padu)</td></tr>
+<tr><td><strong>Bucket4j</strong></td><td>token bucket algoritam s distribuiranim stanjem</td><td>ručno brojanje u Redisu (granica minute ima rupu)</td></tr>
+<tr><td><strong>Angular</strong></td><td>tri odvojena interfejsa nad istim API-jem</td><td>React/Vue — stvar izbora; Angular ima ugrađen router, HTTP, forme</td></tr>
+<tr><td><strong>Docker + Compose</strong></td><td>identično okruženje na laptopu i serveru; pet servisa jednom komandom</td><td>ručna instalacija (Redis zvanično ne postoji za Windows)</td></tr>
+<tr><td><strong>Testcontainers</strong></td><td>integracioni testovi nad <em>pravim</em> Postgresom/Redisom/Rabbitom</td><td>H2 — druga baza, drugo ponašanje; test koji prolazi na H2 a pada u produkciji je gori od nikakvog</td></tr>
+</table>
+
+<h1>Dio II — Slojevi</h1>
+
+<h2>4. Baza podataka i Flyway</h2>
+
+<h3>Kako Flyway radi</h3>
+<p>SQL fajlovi u <code>src/main/resources/db/migration</code>, imenovani <code>V1__init.sql</code>,
+<code>V2__users.sql</code>, <code>V3__events.sql</code>, <code>V4__ticket_user.sql</code>.
+Pri startu Flyway pogleda svoju tabelu <code>flyway_schema_history</code>, vidi koje su
+migracije već izvršene, i pusti samo nove — redom po verziji. Svaka se izvrši <strong>tačno
+jednom</strong> i pamti se njen checksum: ako naknadno promijeniš već izvršenu migraciju,
+Flyway odbije da starta.</p>
+
+<blockquote>
+<strong>Pravilo koje se krši i skupo plaća:</strong> izvršena migracija se nikad ne mijenja.
+Greška se ispravlja <em>novom</em> migracijom. Razlog: na tvom laptopu bi se promjena „primila"
+tek poslije brisanja baze, a u produkciji nikad.
+</blockquote>
+
+<h3>Ključni dio šeme</h3>
+<pre><code>CREATE TABLE ticket (
+    id           BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    queue_id     BIGINT      NOT NULL,
+    number       VARCHAR(10) NOT NULL,     -- "A007", ono što čovjek vidi
+    sequence_no  INT         NOT NULL,     -- redni broj u danu, za sortiranje
+    issued_date  DATE        NOT NULL,
+    status       VARCHAR(20) NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    called_at    TIMESTAMPTZ,              -- null dok se ne desi
+    completed_at TIMESTAMPTZ,
+    user_id      BIGINT,                   -- V4: ko je uzeo broj (nullable)
+
+    CONSTRAINT fk_ticket_queue FOREIGN KEY (queue_id) REFERENCES queue (id),
+    CONSTRAINT uq_ticket_queue_date_seq UNIQUE (queue_id, issued_date, sequence_no),
+    CONSTRAINT ck_ticket_status CHECK (status IN (
+        'WAITING','CALLED','SERVING','COMPLETED','CANCELLED','NO_SHOW','SKIPPED'))
+);
+</code></pre>
+
+<p>Tri stvari vrijedne pažnje:</p>
+<ul>
+<li><strong><code>uq_ticket_queue_date_seq</code></strong> — jedinstven redni broj po redu i danu.
+Ovo je <em>posljednja odbrana</em> od race conditiona: čak i da lock zakaže, baza ne dozvoli
+dva ista broja.</li>
+<li><strong><code>ck_ticket_status</code></strong> — baza ne vjeruje aplikaciji. Ako neko upiše
+status koji ne postoji u enumu, insert pada.</li>
+<li><strong><code>TIMESTAMPTZ</code></strong>, ne <code>TIMESTAMP</code> — čuva trenutak u UTC-u
+s poznatom zonom. <code>TIMESTAMP</code> bez zone je „14:00 negdje" i pravi bugove pri
+promjeni vremena i pri serverima u drugoj zoni.</li>
+</ul>
+
+<h3>Konfiguracija koja to čuva</h3>
+<pre><code>spring.jpa.hibernate.ddl-auto=validate   # Hibernate SMIJE samo provjeriti, nikad mijenjati
+spring.jpa.open-in-view=false            # lazy loading van transakcije puca ODMAH
+spring.flyway.enabled=true
+</code></pre>
+
+<blockquote class="why">
+<strong><code>open-in-view=false</code></strong> je važan detalj. Spring Boot ga podrazumijevano
+drži na <code>true</code>: transakcija ostaje otvorena do kraja HTTP odgovora, pa lazy kolekcije
+rade „magično" i u kontroleru. Posljedica je N+1 problem koji niko ne primijeti dok baza ne
+počne da gori. Sa <code>false</code>, pristup lazy polju van servisa baca
+<code>LazyInitializationException</code> — greška odmah, umjesto sporosti kasnije.
+</blockquote>
+
+<h2>5. Entiteti i JPA/Hibernate</h2>
+
+<pre><code>@Entity
+@Table(name = "ticket")
+@Getter @Setter @NoArgsConstructor
+public class Ticket {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "queue_id", nullable = false)
+    private Queue queue;
+
+    @Enumerated(EnumType.STRING)          // OBAVEZNO: default je ORDINAL (broj)
+    @Column(nullable = false, length = 20)
+    private TicketStatus status;
+
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private OffsetDateTime createdAt;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id")
+    private User user;                     // null = izdat bez naloga
+}
+</code></pre>
+
+<h3>Odluke</h3>
+<table>
+<tr><th>Odluka</th><th>Zašto</th></tr>
+<tr><td><code>@Enumerated(EnumType.STRING)</code></td><td>Default je <code>ORDINAL</code> — upisuje redni broj konstante. Ako neko ubaci novu konstantu u sredinu enuma, svi stari redovi u bazi odjednom znače nešto drugo. Sa <code>STRING</code> u bazi piše <code>'WAITING'</code> i <code>CHECK</code> constraint radi.</td></tr>
+<tr><td><code>fetch = LAZY</code> na <code>@ManyToOne</code></td><td>Default za <code>@ManyToOne</code> je <code>EAGER</code> — svaki <code>findById(ticket)</code> bi povukao i red, i lokaciju, i uslugu. Lazy povlači tek kad zatreba.</td></tr>
+<tr><td><code>@CreationTimestamp</code></td><td>Hibernate postavlja sam pri insertu. <code>updatable=false</code> da se ne može naknadno promijeniti.</td></tr>
+<tr><td>Lombok <code>@Getter @Setter</code></td><td>Manje šuma. <code>@Data</code> se izbjegava na entitetima jer generiše <code>equals/hashCode</code> nad svim poljima — a to s lazy vezama i ID-om koji je null prije inserta pravi suptilne bugove.</td></tr>
+</table>
+
+<h3>Dirty checking — mehanizam koji treba razumjeti</h3>
+<p>Entitet učitan unutar <code>@Transactional</code> metode je <strong>managed</strong>: Hibernate
+čuva snimak njegovog stanja. Na commitu uporedi trenutno stanje sa snimkom i za svaku razliku
+pošalje <code>UPDATE</code> — <strong>bez ijednog poziva <code>save()</code></strong>.</p>
+
+<pre><code>@Transactional
+public TicketResponse create(Long queueId, String email) {
+    Queue queue = queueService.getEntityForUpdate(queueId);
+    queue.setLastNumber(sljedeci);     // ← nema save(); UPDATE ide na commitu
+
+    Ticket ticket = new Ticket();      // NOV objekat, Hibernate ga ne zna
+    ...
+    Ticket snimljen = repository.save(ticket);   // ← save() OVDJE treba (INSERT)
+}
+</code></pre>
+
+<blockquote>
+<strong>Zamka:</strong> bez <code>@Transactional</code> entitet je poslije repozitorija
+<em>detached</em> — setteri rade u memoriji, ništa ne ode u bazu, i <strong>nema greške</strong>.
+Tiho ne radi. Zato je anotacija na svakoj metodi koja mijenja stanje.
+</blockquote>
+
+<h2>6. Repozitoriji (Spring Data JPA)</h2>
+
+<p>Interfejs bez implementacije — Spring je generiše pri startu iz <strong>imena metode</strong>.</p>
+
+<pre><code>public interface TicketRepository extends JpaRepository&lt;Ticket, Long&gt; {
+
+    List&lt;Ticket&gt; findByQueueIdAndIssuedDateOrderBySequenceNoAsc(Long queueId, LocalDate issuedDate);
+
+    Optional&lt;Ticket&gt; findFirstByQueueIdAndIssuedDateAndStatusOrderBySequenceNoAsc(
+            Long queueId, LocalDate issuedDate, TicketStatus status);
+
+    long countByQueueIdAndIssuedDateAndStatusAndSequenceNoLessThan(
+            Long queueId, LocalDate issuedDate, TicketStatus status, int sequenceNo);
+}
+</code></pre>
+
+<p>Kako se ime čita:</p>
+<pre><code>findFirst  By  QueueId And IssuedDate And Status  OrderBy SequenceNo Asc
+   │            │           │            │              │
+ LIMIT 1      WHERE queue_id=? AND issued_date=? AND status=?   ORDER BY sequence_no ASC
+</code></pre>
+
+<p>Riječi između <code>find</code> i <code>By</code> se ignorišu — služe ljudima. Zato
+<code>findWithLockById</code> radi isto što i <code>findById</code>; lock dodaje
+<em>anotacija</em>, a ime samo upozorava pozivaoca.</p>
+
+<blockquote class="tip">
+<strong>Kad ime nije dovoljno</strong> — <code>@Query</code> s JPQL-om ili nativnim SQL-om.
+U <code>AnalyticsRepository</code> koristimo nativni jer JPQL ne poznaje
+<code>COUNT(*) FILTER (WHERE …)</code> ni <code>EXTRACT(EPOCH FROM …)</code>.
+</blockquote>
+
+<h3>Kad zvati tuđi repozitorij, a kad tuđi servis</h3>
+<blockquote class="why">
+Zovi <strong>servis</strong> kad ti treba tuđe <em>pravilo</em>; zovi <strong>repozitorij</strong>
+samo kad ti treba goli podatak bez pravila.<br><br>
+<code>TicketService</code> koristi <code>QueueService.getEntityForUpdate</code> (a ne
+<code>QueueRepository</code>) jer ta metoda nosi pravilo „red se uzima sa lockom, i to samo
+unutar transakcije". Zaobilaženje servisa bi tiho uklonilo lock.<br>
+Istovremeno koristi <code>UserRepository</code> direktno, jer mu treba samo „nađi korisnika po
+emailu" — nema pravila koje bi se prekršilo.
+</blockquote>
+
+<h2>7. Servisi i transakcije</h2>
+
+<h3>Šta je transakcija</h3>
+<p>Grupa SQL naredbi koju baza tretira kao jednu: <code>BEGIN</code> … <code>COMMIT</code>
+(sve prođe) ili <code>ROLLBACK</code> (nijedna). <code>create()</code> radi dva upisa
+(<code>UPDATE queue</code> za brojač i <code>INSERT ticket</code>). Bez transakcije, ako
+insert padne, brojač je već povećan — red zauvijek preskoči broj.</p>
+
+<h3>Kako Spring to izvodi</h3>
+<p><code>@Transactional</code> radi kroz <strong>proxy</strong>: Spring omota bean objektom koji
+prije metode uradi <code>BEGIN</code>, poslije normalnog <code>return</code>-a
+<code>COMMIT</code>, a na <code>RuntimeException</code> <code>ROLLBACK</code>. Transakcija je
+vezana za <strong>nit</strong>, pa sve što metoda pozove radi u istoj transakciji.</p>
+
+<blockquote>
+<strong>Dvije klasične zamke:</strong><br>
+1. <em>Self-invocation</em>: <code>this.drugaMetoda()</code> iz iste klase zaobilazi proxy —
+anotacija ne važi. Rješenje: izdvojiti u drugi bean.<br>
+2. <em>Checked exception ne rollbackuje</em> po defaultu. <code>IOException</code> iz
+<code>@Transactional</code> metode → commit svejedno prođe. Mijenja se sa
+<code>rollbackFor = Exception.class</code>.
+</blockquote>
+
+<h3>Atributi koje koristimo</h3>
+<table>
+<tr><th>Atribut</th><th>Značenje</th><th>Gdje u projektu</th></tr>
+<tr><td><code>propagation</code></td><td>odnos prema postojećoj transakciji</td><td><code>MANDATORY</code> na <code>getEntityForUpdate</code> i <code>IdempotencyGuard.prviPut</code></td></tr>
+<tr><td><code>readOnly</code></td><td>hint: Hibernate preskače dirty checking, driver može na repliku</td><td>sve <code>find*</code> metode</td></tr>
+<tr><td><code>isolation</code></td><td>koliko vidim tuđe nepotvrđene promjene</td><td>default (<code>READ_COMMITTED</code>) — lock rješava naš problem preciznije</td></tr>
+<tr><td><code>rollbackFor</code></td><td>koje greške izazivaju rollback</td><td>ne koristimo — sve naše su <code>RuntimeException</code></td></tr>
+</table>
+
+<h3>Propagation — tabela koju treba znati</h3>
+<table>
+<tr><th>Vrijednost</th><th>Pozvan IZ transakcije</th><th>Pozvan BEZ transakcije</th></tr>
+<tr><td><code>REQUIRED</code> (default)</td><td>pridruži se postojećoj</td><td>otvori svoju</td></tr>
+<tr><td><code>MANDATORY</code></td><td>pridruži se postojećoj</td><td><strong>baci grešku</strong></td></tr>
+<tr><td><code>REQUIRES_NEW</code></td><td>pauziraj tuđu, otvori svoju</td><td>otvori svoju</td></tr>
+<tr><td><code>SUPPORTS</code></td><td>pridruži se</td><td>radi bez transakcije</td></tr>
+<tr><td><code>NEVER</code></td><td>baci grešku</td><td>radi bez transakcije</td></tr>
+</table>
+
+<h2>8. DTO-ovi i kontroleri</h2>
+
+<p>Entitet nikad ne izlazi iz servisa prema HTTP-u. Umjesto njega ide <code>record</code>:</p>
+
+<pre><code>public record TicketResponse(
+        Long id, Long queueId, String number, int sequenceNo,
+        LocalDate issuedDate, TicketStatus status,
+        OffsetDateTime createdAt, OffsetDateTime calledAt, OffsetDateTime completedAt) {
+
+    public static TicketResponse from(Ticket t) {
+        return new TicketResponse(t.getId(), t.getQueue().getId(), t.getNumber(), ...);
+    }
+}
+</code></pre>
+
+<blockquote class="why">
+<strong>Zašto DTO, a ne entitet direktno?</strong><br>
+1. <em>Oblik baze ≠ oblik API-ja.</em> Preimenuješ kolonu → mijenja se JSON → puca frontend.<br>
+2. <em>Curenje podataka.</em> <code>User</code> entitet ima <code>passwordHash</code>.<br>
+3. <em>Lazy veze.</em> Serijalizacija entiteta okida lazy loading ili baca izuzetak.<br>
+4. <em>Beskonačna rekurzija</em> kod dvosmjernih veza.<br>
+<code>record</code> jer je nepromjenjiv — kompajler te spriječi da ga koristiš kao radni objekat.
+</blockquote>
+
+<h3>Kontroler</h3>
+<pre><code>@PostMapping("/api/queues/{queueId}/tickets")
+@ResponseStatus(HttpStatus.CREATED)
+public TicketResponse create(@PathVariable Long queueId, Authentication auth) {
+    rateLimiter.provjeri(auth.getName());          // pravilo za HTTP pozivaoca
+    return ticketService.create(queueId, auth.getName());
+}
+
+@PostMapping("/api/queues/{queueId}/next")
+@PreAuthorize("hasAnyRole('EMPLOYEE','MANAGER','ADMIN')")
+public TicketResponse callNext(@PathVariable Long queueId) {
+    return ticketService.callNext(queueId);
+}
+</code></pre>
+
+<p><code>Authentication auth</code> Spring ubaci sam — to je korisnik iz
+<code>SecurityContext</code>-a koji je napunio <code>JwtAuthFilter</code>.
+<code>auth.getName()</code> je email iz tokena.</p>
+
+<blockquote class="why">
+<strong>Zašto je rate limit u kontroleru, a state machine u servisu?</strong>
+Rate limit je pravilo za <em>HTTP pozivaoca</em> — ticket koji bi napravio Rabbit listener ili
+zakazani posao ne smije biti odbijen zbog kvote. Provjera prelaza stanja je <em>poslovno
+pravilo</em> i mora važiti odakle god poziv došao.
+</blockquote>
+
+<h2>9. Obrada grešaka</h2>
+
+<p><code>@RestControllerAdvice</code> hvata izuzetke iz svih kontrolera na jednom mjestu i
+pretvara ih u isti JSON oblik:</p>
+
+<pre><code>public record ApiError(String message, List&lt;String&gt; details) { }
+</code></pre>
+
+<table>
+<tr><th>Izuzetak</th><th>Status</th><th>Zašto baš taj</th></tr>
+<tr><td><code>NotFoundException</code></td><td>404</td><td>resurs ne postoji</td></tr>
+<tr><td><code>MethodArgumentNotValidException</code></td><td>400</td><td>pao <code>@Valid</code>; vraća koje polje i zašto</td></tr>
+<tr><td><code>BadCredentialsException</code></td><td>401</td><td>namjerno ista poruka za nepoznat email i pogrešnu lozinku — drugačije bi otkrile koji su emailovi registrovani</td></tr>
+<tr><td><code>AccessDeniedException</code></td><td>403</td><td>znamo ko si, nemaš prava</td></tr>
+<tr><td><code>InvalidStateTransitionException</code></td><td>409</td><td>zahtjev je ispravan, ali se kosi s trenutnim stanjem</td></tr>
+<tr><td><code>DataIntegrityViolationException</code></td><td>409</td><td>pao constraint — sukob s postojećim podacima, nije greška servera</td></tr>
+<tr><td><code>RateLimitExceededException</code></td><td>429</td><td>+ header <code>Retry-After</code> sa brojem sekundi</td></tr>
+</table>
+
+<blockquote class="tip">
+<strong>401 vs 403</strong> — 401 „nisi se predstavio" (nema tokena ili je neispravan),
+403 „predstavio si se, ali nemaš prava". Miješanje ta dva je čest bug; u ovom projektu je
+<code>/error</code> morao biti <code>permitAll</code> upravo zbog toga (vidi poglavlje 11).
+</blockquote>
+
+<h1>Dio III — Mehanizmi</h1>
+
+<h2>10. State machine — životni ciklus ticketa</h2>
+
+<h3>Problem</h3>
+<p>Ticket ima sedam stanja. Bez pravila, šalter bi mogao „završiti" ticket koji nikad nije
+pozvan, ili vratiti otkazani u red. Svaka takva greška je nevidljiva dok statistika ne počne
+davati besmislice.</p>
+
+<h3>Rješenje: tabela dozvoljenih prelaza u enumu</h3>
+<pre><code>public enum TicketStatus {
+    WAITING, CALLED, SERVING, COMPLETED, CANCELLED, NO_SHOW, SKIPPED;
+
+    // Ispod konstanti: Java inicijalizuje enum odozgo - prvo konstante, pa statička polja.
+    private static final Map&lt;TicketStatus, Set&lt;TicketStatus&gt;&gt; DOZVOLJENI = Map.of(
+            WAITING,   EnumSet.of(CALLED, CANCELLED),
+            CALLED,    EnumSet.of(SERVING, NO_SHOW, SKIPPED),
+            SERVING,   EnumSet.of(COMPLETED),
+            SKIPPED,   EnumSet.of(WAITING),
+            COMPLETED, EnumSet.noneOf(TicketStatus.class),   // završno stanje
+            CANCELLED, EnumSet.noneOf(TicketStatus.class),
+            NO_SHOW,   EnumSet.noneOf(TicketStatus.class));
+
+    public boolean moze(TicketStatus cilj) {
+        return DOZVOLJENI.get(this).contains(cilj);
+    }
+}
+</code></pre>
+
+<p>Završna stanja <strong>moraju</strong> biti u mapi s praznim skupom — inače
+<code>get()</code> vrati <code>null</code> i <code>contains</code> baci
+<code>NullPointerException</code>.</p>
+
+<h3>Jedina tačka gdje se status mijenja</h3>
+<pre><code>private TicketResponse promijeni(Ticket ticket, TicketStatus cilj) {
+    TicketStatus trenutni = ticket.getStatus();
+
+    if (!trenutni.moze(cilj)) {
+        throw new InvalidStateTransitionException(
+                "Ticket " + ticket.getNumber() + ": prelaz " + trenutni + " -> " + cilj
+                        + " nije dozvoljen");                    // -> 409 Conflict
+    }
+
+    ticket.setStatus(cilj);
+
+    // Vremenske oznake SAMO pri prvom ulasku u stanje - nose V6 statistiku.
+    if (cilj == TicketStatus.CALLED &amp;&amp; ticket.getCalledAt() == null) {
+        ticket.setCalledAt(OffsetDateTime.now());
+    }
+    if (cilj == TicketStatus.COMPLETED) {
+        ticket.setCompletedAt(OffsetDateTime.now());
+    }
+
+    events.objavi(TicketEvent.promijenjen(ticket));
+    cache.evictAfterCommit(ticket.getQueue().getId());
+    return TicketResponse.from(ticket);        // bez save(): dirty checking
+}
+</code></pre>
+
+<p>Sedam javnih metoda (<code>call</code>, <code>startServing</code>, <code>complete</code>,
+<code>noShow</code>, <code>skip</code>, <code>requeue</code>, <code>cancel</code>) su
+jednolinijske — svaka zove <code>promijeni</code> s drugim ciljem.</p>
+
+<blockquote class="why">
+<strong>Zašto mapa, a ne if/else u servisu?</strong> Pravilo živi uz podatak koji opisuje.
+Dodavanje stanja je jedan red u mapi, ne traženje po servisu.<br>
+<strong>Zašto je <code>promijeni</code> privatna?</strong> Da <code>setStatus</code> postoji na
+tačno jednom mjestu. Nijedan drugi kod — ni kontroler, ni WebSocket, ni Rabbit listener — ne
+može promijeniti status zaobilazeći provjeru.<br>
+<strong>Zašto <code>calledAt</code> samo prvi put?</strong> Ticket može ići
+CALLED → SKIPPED → WAITING → CALLED. Vrijeme čekanja se mjeri do <em>prvog</em> poziva;
+prepisivanje bi statistiku učinilo lažno dobrom.
+</blockquote>
+
+<h2>11. Security: JWT, filter chain, uloge</h2>
+
+<h3>Dvije faze</h3>
+<pre><code>LOGIN (jednom):    lozinka --BCrypt.matches--&gt; OK --JwtService.generate--&gt; token
+SVAKI ZAHTJEV:     token --JwtAuthFilter--&gt; SecurityContext --chain/@PreAuthorize--&gt; kontroler
+</code></pre>
+
+<h3>BCrypt — lozinke</h3>
+<p>U bazu ide samo hash (<code>$2a$10$N9qo8uLO...</code>, 60 znakova), nikad lozinka. BCrypt je
+<em>namjerno spor</em> (cost faktor) i sam dodaje <em>salt</em> — pa ista lozinka dva puta daje
+različit hash, i rainbow tabele ne pomažu. Provjera nije dešifrovanje (nemoguće) nego ponovno
+hashiranje i poređenje.</p>
+
+<h3>JWT — struktura</h3>
+<pre><code>eyJhbGciOiJIUzI1NiJ9 . eyJzdWIiOiJtYXJrb0B0ZXN0LmNvbSIsInJvbGUiOiJNQU5BR0VSIn0 . 4f2a...
++---- header -----+   +-------------- payload --------------------------+   + potpis +
+</code></pre>
+<p>Prva dva dijela su <strong>obični base64 — svako ih može pročitati</strong> (zalijepi token
+na jwt.io). Sigurnost je u potpisu: HMAC-SHA nad prva dva dijela, s tajnim ključem. Promijeniš
+payload → potpis se ne slaže → token bezvrijedan.</p>
+
+<blockquote>
+<strong>Zato u token nikad ne ide ništa tajno.</strong> Samo identitet i ono što smije biti javno.
+</blockquote>
+
+<pre><code>public String generate(User user) {
+    Date sada = new Date();
+    return Jwts.builder()
+            .subject(user.getEmail())              // ko je korisnik
+            .claim("role", user.getRole().name())
+            .issuedAt(sada)
+            .expiration(new Date(sada.getTime() + validityMs))  // jedini prestanak vrijedenja
+            .signWith(key)
+            .compact();
+}
+
+public String extractEmail(String token) {
+    return Jwts.parser().verifyWith(key).build()
+            .parseSignedClaims(token)      // baca JwtException ako potpis ili rok ne valja
+            .getPayload().getSubject();
+}
+</code></pre>
+
+<blockquote class="why">
+<strong>Server ne pamti token.</strong> Zato ga ne može ni poništiti — jedini prestanak je
+istek roka (2 h). „Odjava" na frontendu samo briše token iz <code>localStorage</code>.
+Za pravo poništavanje trebala bi blacklista u Redisu ili kratki token + refresh token —
+svjesno nije rađeno.
+</blockquote>
+
+<h3>JwtAuthFilter — pretvara header u identitet</h3>
+<pre><code>protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
+                                FilterChain chain) throws ServletException, IOException {
+
+    String header = request.getHeader("Authorization");
+
+    if (header != null &amp;&amp; header.startsWith("Bearer ")) {
+        String token = header.substring(7);
+        try {
+            String email = jwtService.extractEmail(token);
+            UserDetails korisnik = userDetailsService.loadUserByUsername(email);   // IZ BAZE
+
+            UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken(
+                    korisnik, null, korisnik.getAuthorities());
+            auth.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+
+            SecurityContextHolder.getContext().setAuthentication(auth);   // &lt;- "kutija"
+
+        } catch (JwtException | UsernameNotFoundException e) {
+            SecurityContextHolder.clearContext();     // loš token = anoniman, NE 401 odavde
+        }
+    }
+
+    chain.doFilter(request, response);    // UVIJEK - van if-a i van try-a
+}
+</code></pre>
+
+<table>
+<tr><th>Odluka</th><th>Zašto</th></tr>
+<tr><td>korisnik se čita <strong>iz baze</strong>, iako je uloga u tokenu</td><td>Token traje 2 h. Ako je uloga promijenjena ili nalog obrisan, stari token ne smije davati stara prava. Cijena je jedan upit po zahtjevu.</td></tr>
+<tr><td>loš token ne vraća 401 <strong>ovdje</strong></td><td>Filter odgovara samo na „ko si", ne na „smiješ li". Javni ekran s pokvarenim tokenom mora i dalje raditi — o tome odlučuje tabela pravila.</td></tr>
+<tr><td><code>chain.doFilter</code> uvijek</td><td>Bez toga zahtjev umire u filteru i kontroler se nikad ne pozove. Najčešća greška u filterima.</td></tr>
+<tr><td><code>OncePerRequestFilter</code></td><td>garantuje tačno jedno izvršenje po zahtjevu; običan filter bi se okinuo i na internim forward-ovima.</td></tr>
+</table>
+
+<blockquote class="tip">
+<strong>„Kutija"</strong> je <code>SecurityContextHolder</code> — tehnički
+<code>ThreadLocal</code>: promjenljiva s posebnom vrijednošću po niti. Tomcat svaki zahtjev
+obrađuje u svojoj niti, pa se korisnici ne miješaju. Na kraju zahtjeva se prazni — server ne
+pamti ko je prijavljen, svaki zahtjev se dokazuje iznova tokenom.
+</blockquote>
+
+<h3>SecurityFilterChain — tabela pravila</h3>
+<pre><code>return http
+    .csrf(csrf -&gt; csrf.disable())
+    .sessionManagement(s -&gt; s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+    .authorizeHttpRequests(auth -&gt; auth
+            .requestMatchers("/api/auth/**").permitAll()
+            .requestMatchers("/error").permitAll()
+            .requestMatchers("/ws/**").permitAll()
+            .requestMatchers(HttpMethod.GET, "/api/queues/*/tickets").permitAll()
+            .anyRequest().authenticated())
+    .exceptionHandling(ex -&gt; ex.authenticationEntryPoint(
+            (req, res, e) -&gt; res.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Potreban token")))
+    .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
+    .build();
+</code></pre>
+
+<p>Bean se pravi <strong>jednom pri startu</strong>; rezultujući lanac se primjenjuje na
+<strong>svaki zahtjev</strong>.</p>
+
+<table>
+<tr><th>Linija</th><th>Odluka</th></tr>
+<tr><td><code>csrf.disable()</code></td><td>CSRF brani od zloupotrebe <em>cookie-ja koje browser šalje sam</em>. Naš token je u headeru, koji browser sam ne prilaže — napad ne postoji. Bez ovoga svaki POST daje 403.</td></tr>
+<tr><td><code>STATELESS</code></td><td>nema HTTP sesije; server se može klonirati bez dijeljenja stanja</td></tr>
+<tr><td>redoslijed pravila</td><td><strong>prvo poklapanje pobjeđuje.</strong> <code>anyRequest()</code> mora biti zadnji — inače bi login tražio token koji se bez logina ne može dobiti.</td></tr>
+<tr><td>entry point → 401</td><td>Springov default je 403; 401 je tačnije za „nemaš token"</td></tr>
+<tr><td><code>addFilterBefore</code></td><td>naš filter ide prije authorization filtera, da kutija bude puna kad se pravila provjeravaju</td></tr>
+<tr><td><code>@EnableMethodSecurity</code> (na klasi)</td><td>bez nje se <code>@PreAuthorize</code> <strong>tiho ignoriše</strong> — nema greške, pravila jednostavno ne važe. Jedna od opasnijih nijemih grešaka u Springu.</td></tr>
+</table>
+
+<blockquote>
+<strong>Zamka <code>/error</code>.</strong> Kad <code>@PreAuthorize</code> odbije poziv, Spring Boot
+interno ponovo šalje zahtjev na <code>/error</code> da napravi JSON. Taj interni zahtjev
+<em>opet prolazi kroz lanac</em>, ali s praznom kutijom. Ako <code>/error</code> nije
+<code>permitAll</code>, authorization filter kaže „nije prijavljen" → entry point → <strong>401
+umjesto 403</strong>. Simptom: CUSTOMER na manager endpointu dobija 401 umjesto 403.
+</blockquote>
+
+<h3>Dva sita</h3>
+<table>
+<tr><th></th><th>Gdje</th><th>Pita</th><th>Pad</th></tr>
+<tr><td><strong>chain</strong></td><td>prije kontrolera, po URL-u</td><td>„smije li iko / prijavljen na ovaj URL?"</td><td>401</td></tr>
+<tr><td><strong><code>@PreAuthorize</code></strong></td><td>na metodi kontrolera</td><td>„smije li OVA uloga ovu operaciju?"</td><td>403</td></tr>
+</table>
+
+<h3>Vlasništvo nad ticketom (V7)</h3>
+<pre><code>@Transactional
+public TicketResponse cancel(Long ticketId, String email, boolean osoblje) {
+    Ticket ticket = getEntity(ticketId);
+
+    User vlasnik = ticket.getUser();                      // može biti null
+    boolean tudji = vlasnik != null &amp;&amp; !vlasnik.getEmail().equals(email);
+    if (tudji &amp;&amp; !osoblje) {
+        throw new AccessDeniedException("Ticket " + ticket.getNumber() + " nije tvoj");
+    }
+    return promijeni(ticket, TicketStatus.CANCELLED);
+}
+</code></pre>
+<p>Provjera je u <strong>servisu</strong>, ne u kontroleru — „otkazuješ samo svoj" je poslovno
+pravilo i mora važiti odakle god poziv došao. Osoblje smije bilo čiji (mušterija je odustala na
+šalteru). Ticket bez vlasnika (izdat na šalteru bez naloga) smije svako.</p>
+
+<h2>12. WebSocket i STOMP</h2>
+
+<h3>Problem</h3>
+<p>Ekran u čekaonici mora prikazivati svježe stanje. Polling svake sekunde sa 50 ekrana =
+50 zahtjeva/s za odgovor koji se mijenja jednom u par minuta.</p>
+
+<h3>Rješenje</h3>
+<p>Browser otvori <strong>jednu trajnu dvosmjernu vezu</strong> na <code>/ws</code> i pretplati
+se na temu <code>/topic/queue/1</code>. Server na promjenu gurne poruku svima pretplaćenim.
+STOMP je tanak protokol iznad WebSocketa koji donosi pojam teme i pretplate.</p>
+
+<pre><code>messagingTemplate.convertAndSend("/topic/queue/" + dogadjaj.queueId(), dogadjaj);
+</code></pre>
+
+<table>
+<tr><th>Odluka</th><th>Zašto</th></tr>
+<tr><td>jedna tema po redu</td><td>ekran u jednoj čekaonici ne dobija poruke o tuđim redovima</td></tr>
+<tr><td><code>/ws/**</code> je <code>permitAll</code></td><td>handshake je običan HTTP zahtjev i pada pod security pravila. Sadržaj je javan — brojevi na zidu ionako vide svi. Da idu privatni podaci, trebala bi autentikacija u STOMP CONNECT frame-u.</td></tr>
+<tr><td>prvo učitavanje ide REST-om</td><td>WebSocket šalje samo <em>promjene</em> od trenutka priključenja; početno stanje mora doći drugačije</td></tr>
+<tr><td>slanje iz <code>TicketEventPublisher</code></td><td>poruka mora otići i kad promjena dođe iz Rabbit listenera ili zakazanog posla, ne samo iz HTTP zahtjeva</td></tr>
+</table>
+
+<h3>WebSocket vs RabbitMQ — razlika koja se pita</h3>
+<table>
+<tr><th></th><th>WebSocket</th><th>RabbitMQ</th></tr>
+<tr><td>Kome</td><td>browseru, odmah</td><td>drugom dijelu backenda</td></tr>
+<tr><td>Ako primalac nije tu</td><td>poruka propadne</td><td>poruka čeka u queue-u</td></tr>
+<tr><td>Garancija</td><td>nikakva</td><td>bar jednom (at-least-once)</td></tr>
+<tr><td>Za šta</td><td>prikaz</td><td>obrada</td></tr>
+</table>
+
+<h2>13. Concurrency: race condition i pesimistički lock</h2>
+
+<blockquote class="tip">
+<strong>Najvažnije poglavlje za intervju.</strong> Metoda je bila: prvo <em>dokazati</em>
+problem testom, pa ga tek onda rješavati.
+</blockquote>
+
+<h3>Problem — dokazan prije popravke</h3>
+<p>Izdavanje broja je „pročitaj brojač → dodaj 1 → upiši". To nije atomično:</p>
+
+<pre><code>nit A                          nit B
+-----                          -----
+SELECT lastNumber -&gt; 7
+                               SELECT lastNumber -&gt; 7      &lt;- isti broj!
+UPDATE lastNumber = 8
+INSERT ticket A008
+                               UPDATE lastNumber = 8
+                               INSERT ticket A008          &lt;- duplikat / constraint puca
+</code></pre>
+
+<p>Test sa 20 paralelnih niti je pokazao da dvije od tri mušterije dobiju grešku umjesto broja,
+a pet šaltera pozove samo šest različitih ljudi.</p>
+
+<h3>Rješenje: pesimistički lock na redu</h3>
+<pre><code>// repozitorij: anotacija dodaje "FOR UPDATE" na SELECT
+@Lock(LockModeType.PESSIMISTIC_WRITE)
+Optional&lt;Queue&gt; findWithLockById(Long id);
+
+// servis: lock vrijedi samo unutar POZIVAOČEVE transakcije
+@Transactional(propagation = Propagation.MANDATORY)
+public Queue getEntityForUpdate(Long id) {
+    return repository.findWithLockById(id)
+            .orElseThrow(() -&gt; new NotFoundException("Red " + id + " ne postoji"));
+}
+</code></pre>
+
+<p>Rezultujući SQL: <code>SELECT * FROM queue WHERE id = 1 FOR UPDATE</code>. Postgres zaključa
+<strong>taj jedan red</strong> dok transakcija ne završi; druga nit koja traži isti red
+<strong>čeka na samom SELECT-u</strong> i onda čita svježu vrijednost.</p>
+
+<h3>Tri sloja koja moraju biti zajedno</h3>
+<pre><code>TicketService.create()          @Transactional       -&gt; otvara transakciju, drži do commita
+   +- QueueService.getEntityForUpdate()  MANDATORY   -&gt; ne otvara svoju
+        +- QueueRepository.findWithLockById()  @Lock -&gt; SELECT ... FOR UPDATE
+</code></pre>
+
+<p>Skloni bilo koji i lock ne radi:</p>
+<ul>
+<li>bez <code>@Lock</code> → običan SELECT → trka</li>
+<li>sa <code>REQUIRES_NEW</code> umjesto <code>MANDATORY</code> → lock se pušta čim metoda vrati
+red, <em>prije</em> nego pozivalac upiše → trka</li>
+<li>bez <code>@Transactional</code> na <code>create</code> → <code>MANDATORY</code> baca grešku
+odmah (i to je dobro: greška umjesto tihe trke)</li>
+</ul>
+
+<blockquote class="why">
+<strong>Zašto <code>MANDATORY</code>, a ne obični <code>@Transactional</code>?</strong>
+S <code>REQUIRED</code> bi danas radilo isto (pridružio bi se postojećoj transakciji).
+<code>MANDATORY</code> je <em>ograda za budućnost</em>: ako neko sutra pozove
+<code>getEntityForUpdate</code> iz metode bez transakcije, <code>REQUIRED</code> bi tiho otvorio
+kratku transakciju i lock bi bio beskoristan; <code>MANDATORY</code> baca grešku pri prvom pozivu.
+</blockquote>
+
+<h3>Pesimistički vs optimistički — trade-off</h3>
+<table>
+<tr><th></th><th>Pesimistički (FOR UPDATE)</th><th>Optimistički (@Version)</th></tr>
+<tr><td>Kako</td><td>zaključaj prije čitanja, ostali čekaju</td><td>čitaj slobodno, na upisu provjeri je li se verzija promijenila; ako jeste — greška, pa retry</td></tr>
+<tr><td>Dobro kad</td><td>sukobi su <strong>česti</strong></td><td>sukobi su <strong>rijetki</strong></td></tr>
+<tr><td>Cijena</td><td>niti čekaju; rizik deadlocka ako se redoslijed zaključavanja razlikuje</td><td>pod opterećenjem mnogo neuspjelih pokušaja i grešaka prema korisniku</td></tr>
+<tr><td>Ovdje</td><td><strong>izabrano</strong> — u špici svi gađaju isti red</td><td>retry bi vraćao greške mušterijama koje samo hoće broj</td></tr>
+</table>
+
+<h3>Deadlock i kako je izbjegnut</h3>
+<p>Deadlock nastaje kad nit A drži X i čeka Y, a nit B drži Y i čeka X. Kod nas i
+<code>create()</code> i <code>callNext()</code> zaključavaju <strong>isti red, prvi</strong> —
+dakle uvijek isti redoslijed, pa ciklus nije moguć. Opšte pravilo: <em>ako svi uzimaju lockove
+u istom redoslijedu, deadlocka nema.</em></p>
+
+<h3>Zašto lock u bazi, a ne <code>synchronized</code> u Javi</h3>
+<p><code>synchronized</code> važi unutar jedne JVM. Sa dvije instance backenda
+(<code>docker compose --scale backend=2</code>) svaka bi imala svoju bravu i trka se vraća.
+Postgres je jedan i njegov lock važi za sve instance.</p>
+
+<h3>Concurrency test — kako je napisan</h3>
+<pre><code>class TicketConcurrencyTest extends AbstractIntegrationTest {   // pravi Postgres
+
+    private static final int BROJ_NITI = 20;
+
+    @Test
+    void izdavanjeBroja() throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(BROJ_NITI);
+        CountDownLatch start = new CountDownLatch(1);           // sve niti čekaju ovdje
+        Collection&lt;String&gt; brojevi = new ConcurrentLinkedQueue&lt;&gt;();
+
+        for (int i = 0; i &lt; BROJ_NITI; i++) {
+            pool.submit(() -&gt; {
+                start.await();                                   // pa krenu ISTOVREMENO
+                brojevi.add(ticketService.create(red.getId(), null).number());
+                return null;
+            });
+        }
+        start.countDown();
+        pool.shutdown();
+        pool.awaitTermination(30, TimeUnit.SECONDS);
+
+        assertThat(new HashSet&lt;&gt;(brojevi)).hasSize(BROJ_NITI);   // 20 RAZLIČITIH brojeva
+    }
+}
+</code></pre>
+
+<blockquote>
+<strong>Test NEMA <code>@Transactional</code> na klasi — namjerno.</strong> Spring bi inače sve
+držao u jednoj transakciji i niti se ne bi ni nadmetale; trka se ne bi mogla reprodukovati.
+Zato se čišćenje radi ručno u <code>@AfterEach</code>.<br>
+<code>CountDownLatch</code> je „startni pištolj": sve niti se naprave i blokiraju, pa krenu u
+isti mikrosekund — bez toga bi se prva završila prije nego se zadnja pokrene.<br>
+<code>ConcurrentLinkedQueue</code> jer obična <code>ArrayList</code> nije sigurna za više niti.
+</blockquote>
+
+<h2>14. Redis keš</h2>
+
+<h3>Problem</h3>
+<p><code>GET /api/queues/{id}/tickets</code> je jedini endpoint bez tokena, gađa ga svaki ekran
+pri svakom osvježavanju, a odgovor je isti za sve.</p>
+
+<h3>Strategija: cache-aside</h3>
+<pre><code>čitanje:  pogledaj keš -&gt; nema -&gt; baza -&gt; upiši u keš -&gt; vrati
+pisanje:  upiši u bazu -&gt; OBRIŠI iz keša (ne upisuj novu vrijednost!)
+</code></pre>
+
+<p>Keš se puni samo čitanjem, prazni samo brisanjem. Alternative: <em>write-through</em>
+(upiši u oba, sinhrono), <em>write-behind</em> (u keš pa kasnije u bazu), <em>TTL-only</em>
+(ne briši, pusti da zastari). Cache-aside je izabran jer je brisanje operacija koja ne može biti
+„pogrešna" — najgore što se desi je jedan dodatni upit u bazu.</p>
+
+<h3>Šest stvari koje se konfigurišu</h3>
+<table>
+<tr><th>#</th><th>Šta</th><th>Gdje</th><th>Zašto</th></tr>
+<tr><td>1</td><td>JSON serializer, tipiziran</td><td><code>CacheConfig</code></td><td>default je JDK serijalizacija — traži <code>Serializable</code>, a <code>TicketResponse</code> je <code>record</code> → 500. JSON je i čitljiv u <code>redis-cli</code>.</td></tr>
+<tr><td>2</td><td>TTL 30 s</td><td><code>CacheConfig</code></td><td>default je zauvijek. TTL je sigurnosna mreža ako brisanje ikad zakaže — ograničava štetu, nije mehanizam osvježavanja.</td></tr>
+<tr><td>3</td><td><code>CacheErrorHandler</code></td><td><code>CacheConfig</code></td><td>Redis nije izvor istine. Pad Redisa → WARN → Spring pozove pravu metodu → baza. Bez toga: 500.</td></tr>
+<tr><td>4</td><td><code>timeout = 1s</code></td><td><code>application.properties</code></td><td>Lettuce default je 60 s. Keš koji „razmišlja" minutu je gori od nikakvog keša.</td></tr>
+<tr><td>5</td><td><code>REJECT_COMMANDS</code></td><td><code>CacheConfig</code></td><td>Lettuce dok zna da je veza pukla <em>stavlja komande u red</em> i čeka reconnect. Treba suprotno: odbij odmah → handler → baza.</td></tr>
+<tr><td>6</td><td>eviction <strong>poslije commita</strong></td><td><code>QueueTicketsCache</code></td><td>vidi ispod</td></tr>
+</table>
+
+<h3>Tipizirani serializer — zašto <code>JavaType</code></h3>
+<pre><code>JavaType listType = springMapper.getTypeFactory()
+        .constructCollectionType(List.class, TicketResponse.class);
+var serializer = new Jackson2JsonRedisSerializer&lt;List&lt;TicketResponse&gt;&gt;(springMapper, listType);
+</code></pre>
+<p>Java <em>briše generike</em> u runtime-u: <code>List&lt;TicketResponse&gt;</code> je samo
+<code>List</code>. Pri pisanju to ne smeta (Jackson vidi stvarne objekte), pri čitanju smeta —
+bez tipa bi napravio <code>List&lt;LinkedHashMap&gt;</code>. <code>JavaType</code> je runtime opis
+onoga što je kompajler zaboravio.</p>
+
+<h3>Zašto ne <code>@CacheEvict</code></h3>
+<ol>
+<li><strong>Ključ.</strong> Keš je po <code>queueId</code>, a metode za promjenu statusa primaju
+<code>ticketId</code> — red se zna tek kad se ticket učita.</li>
+<li><strong>Trenutak.</strong> <code>@CacheEvict</code> briše <em>dok transakcija još traje</em>:</li>
+</ol>
+
+<pre><code>nit A (šalter, u transakciji)            nit B (ekran)
+-----------------------------            -------------
+setStatus(CALLED)    [nije u bazi]
+evict -&gt; Redis prazan
+                                         GET -&gt; keš prazan -&gt; baza
+                                         baza JOŠ VIDI WAITING (A nije commitovala)
+                                         upiše WAITING u keš
+COMMIT -&gt; baza: CALLED
+                                         ekran pokazuje WAITING do isteka TTL-a
+</code></pre>
+
+<pre><code>public void evictAfterCommit(Long queueId) {
+    if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+        evict(queueId);            // nema transakcije (test) - briši odmah
+        return;
+    }
+    TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+        @Override public void afterCommit() { evict(queueId); }
+    });
+}
+
+private void evict(Long queueId) {
+    Cache cache = cacheManager.getCache(CacheConfig.QUEUE_TICKETS);
+    if (cache == null) return;
+    try {
+        cache.evict(queueId);
+    } catch (RuntimeException e) {
+        // CacheErrorHandler štiti SAMO anotacije. Direktan poziv ide mimo njega -
+        // bez ovoga: Redis padne -&gt; afterCommit pukne -&gt; klijent dobije 500
+        // za ticket koji je VEĆ upisan u bazu.
+        log.warn("Evict nije uspio za red {}: {}", queueId, e.getMessage());
+    }
+}
+</code></pre>
+
+<blockquote>
+<strong>Bug koji je nađen tek gašenjem Redisa.</strong> Prva verzija je imala
+<code>CacheErrorHandler</code> i djelovala ispravno — dok GET nije počeo da visi 60 sekundi
+(Lettuce default), a POST da vraća 500 (direktan <code>evict</code> mimo handlera).
+Pouka: kad testiraš pad zavisnosti, probaj <em>i</em> operacije koje mijenjaju stanje, ne samo
+čitanje.
+</blockquote>
+
+<h3><code>TransactionSynchronization</code> — gdje se još koristi</h3>
+<p>Svuda gdje akcija ima <em>spoljni efekat koji se ne može rollbackovati</em>, a zavisi od
+uspjeha transakcije: slanje poruke na broker, email/SMS, WebSocket broadcast, upis fajla, poziv
+drugog servisa. Ograničenje: <code>afterCommit</code> <strong>nije garantovan</strong> — ako JVM
+padne između commita i callbacka, akcija izostane. Za keš je to pokriveno TTL-om; za poruke nije,
+i zato postoji outbox pattern.</p>
+
+<h2>15. Rate limiting (Bucket4j)</h2>
+
+<h3>Problem</h3>
+<p>Ništa ne sprječava korisnika (ili bug u frontendu) da pozove „uzmi broj" hiljadu puta i
+napuni red smećem.</p>
+
+<h3>Algoritam: token bucket</h3>
+<p>Svaki korisnik ima kantu s N žetona. Zahtjev troši jedan; kanta se puni brzinom N po minuti.
+Prazna kanta → 429.</p>
+
+<blockquote class="why">
+<strong>Zašto ne „N zahtjeva po kalendarskoj minuti"?</strong> Taj pristup ima rupu na granici:
+5 zahtjeva u 12:00:59 + 5 u 12:01:00 = 10 u jednoj sekundi. Token bucket to ne dozvoljava jer
+mjeri vrijeme od zadnjeg punjenja, ne položaj u minuti.
+</blockquote>
+
+<pre><code>// konstruktor - pravilo se pravi jednom
+Bandwidth limit = Bandwidth.builder()
+        .capacity(perMinute)                              // 5 žetona max (burst)
+        .refillGreedy(perMinute, Duration.ofMinutes(1))   // 1 žeton na 12 s
+        .build();
+this.configuration = () -&gt; BucketConfiguration.builder().addLimit(limit).build();
+
+// provjeri - na svakom zahtjevu
+public void provjeri(String korisnik) {
+    ConsumptionProbe probe;
+    try {
+        probe = proxyManager.builder()
+                .build(KEY_PREFIX + korisnik, configuration)   // kanta iz Redisa
+                .tryConsumeAndReturnRemaining(1);
+    } catch (RuntimeException e) {
+        log.warn("Rate limiter nedostupan, propuštam [{}]", korisnik);
+        return;                                                // FAIL-OPEN
+    }
+    if (!probe.isConsumed()) {
+        long cekaj = Math.max(1, probe.getNanosToWaitForRefill() / 1_000_000_000L);
+        throw new RateLimitExceededException(cekaj);           // -&gt; 429 + Retry-After
+    }
+}
+</code></pre>
+
+<table>
+<tr><th>Odluka</th><th>Zašto</th></tr>
+<tr><td>stanje kante <strong>u Redisu</strong> (<code>ProxyManager</code>)</td><td>sa dvije instance backenda kanta u memoriji bi dala dupli limit. <code>ProxyManager</code> je „fabrika kanti": daš ključ, dobiješ <code>Bucket</code> koji izgleda lokalno ali svaki <code>tryConsume</code> čita/piše Redis (atomično, compare-and-set).</td></tr>
+<tr><td>ključ je <strong>email</strong>, ne IP</td><td>cijela čekaonica dijeli jedan WiFi IP — jedan čovjek bi blokirao sve. Endpoint ionako traži token, pa identitet postoji.</td></tr>
+<tr><td><strong>fail-open</strong></td><td>rate limit štiti od zloupotrebe, <em>nije sigurnosna granica</em>. Bolje bez limita nego da niko ne može uzeti broj. Za login ili plaćanje odluka bi bila obrnuta (fail-closed).</td></tr>
+<tr><td><code>refillGreedy</code></td><td>žetoni se vraćaju ravnomjerno, ne svih 5 odjednom — glatkije za korisnika</td></tr>
+<tr><td>ključ ističe</td><td>inače bi Redis zauvijek pamtio svakog korisnika koji je ikad uzeo broj</td></tr>
+<tr><td>429 + <code>Retry-After</code></td><td>standardan način da se klijentu kaže <em>koliko</em> da sačeka, a ne samo „ne može"</td></tr>
+</table>
+
+
+<h2>16. RabbitMQ: event-driven arhitektura i idempotency</h2>
+
+<h3>Problem</h3>
+<p>Kad šalter pozove sljedećeg, tri stvari van <code>TicketService</code> to moraju znati: ekran
+(WebSocket), SMS servis, statistika. Da servis sve troje zove sam:</p>
+<ul>
+<li><strong>sporo</strong> — šalter čeka da SMS provajder odgovori</li>
+<li><strong>krhko</strong> — pad SMS provajdera ruši poziv koji je u bazi uspio</li>
+<li><strong>spregnuto</strong> — svaki novi zainteresovani traži izmjenu servisa</li>
+</ul>
+
+<h3>Rješenje: broker</h3>
+<p>Servis ostavi <em>događaj</em> u exchange i nastavi (~1 ms). Ko god je zainteresovan, pokupi
+ga sam.</p>
+
+<pre><code>TicketService.create/promijeni()
+   +- objavi(event)                    [Spring in-process event, NE izlazi iz JVM-a]
+   COMMIT
+       |  AFTER_COMMIT
+   TicketEventPublisher.posalji(event)
+       +-&gt; WebSocket /topic/queue/{id}                (ekran, bez garancije)
+       +-&gt; RabbitMQ exchange "ticket.events"          (backend, s garancijom)
+              | routing key "ticket.called" (topic exchange kopira u oba):
+              +-&gt; queue ticket.notifications --&gt; NotificationListener  (SMS)
+              +-&gt; queue ticket.analytics     --&gt; AnalyticsListener     (ticket_event_log)
+                     (pukne 3x -&gt; ticket.analytics.dlq)
+</code></pre>
+
+<h3>Topologija</h3>
+<pre><code>@Bean public TopicExchange ticketExchange() { return new TopicExchange("ticket.events"); }
+
+@Bean public Queue notificationsQueue() {
+    return QueueBuilder.durable("ticket.notifications")
+            .deadLetterExchange("ticket.events.dlx")
+            .deadLetterRoutingKey("ticket.notifications")
+            .build();
+}
+
+@Bean public Binding notificationsBinding() {
+    return BindingBuilder.bind(notificationsQueue()).to(ticketExchange()).with("ticket.#");
+}
+</code></pre>
+
+<table>
+<tr><th>Odluka</th><th>Zašto</th></tr>
+<tr><td><strong>topic</strong> exchange, ne direct</td><td>Direct traži tačno poklapanje ključa. Topic dozvoljava šablone (<code>ticket.#</code> = sve što počinje s <code>ticket.</code>). Sutra SMS servis može slušati samo <code>ticket.called</code> — bez izmjene u produceru. Producer objavljuje <em>šta se desilo</em>, potrošač bira <em>šta ga zanima</em>.</td></tr>
+<tr><td><strong>dva queue-a</strong>, ne jedan zajednički</td><td>Jedan queue s dva potrošača bi <em>dijelio</em> poruke (competing consumers — obrazac za raspodjelu posla). Nama treba da oba dobiju svaku poruku. Bonus: izolacija kvara — ako analytics padne, notifications radi dalje.</td></tr>
+<tr><td><strong>durable</strong></td><td>queue i poruke prežive restart Rabbita</td></tr>
+<tr><td><strong>DLQ po queue-u</strong></td><td>vidi ispod</td></tr>
+<tr><td>JSON konverter</td><td>default je Java serijalizacija — nečitljiva u UI-ju, vezana za Java verziju, i potrošač bi morao biti Java</td></tr>
+</table>
+
+<h3>Producer: zašto slanje tek poslije commita</h3>
+<pre><code>public void objavi(TicketEvent dogadjaj) {
+    springEvents.publishEvent(dogadjaj);       // samo registruje, ništa ne šalje
+}
+
+@TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT, fallbackExecution = true)
+public void posalji(TicketEvent dogadjaj) {
+    messagingTemplate.convertAndSend("/topic/queue/" + dogadjaj.queueId(), dogadjaj);
+    try {
+        rabbitTemplate.convertAndSend(RabbitConfig.EXCHANGE, dogadjaj.routingKey(), dogadjaj);
+    } catch (RuntimeException e) {
+        // Transakcija je VEĆ commitovana - ticket postoji. Ne možemo vratiti
+        // HTTP odgovor u grešku zbog notifikacije.
+        log.error("Rabbit nedostupan, događaj {} izgubljen: {}", dogadjaj.eventId(), e.getMessage());
+    }
+}
+</code></pre>
+
+<blockquote class="why">
+Da se šalje odmah iz <code>objavi()</code>, a commit poslije padne, potrošač bi obradio događaj
+za ticket <strong>koji ne postoji</strong>: analytics bi upisao red za fantoma, SMS bi otišao
+čovjeku bez broja. <code>AFTER_COMMIT</code> to zatvara.<br><br>
+<strong><code>fallbackExecution = true</code></strong> — ako neko pozove <code>objavi</code>
+<em>van</em> transakcije (test, budući scheduler), događaj bi inače tiho nestao jer nema commita
+koji bi ga okinuo. Ovako se pošalje odmah.
+</blockquote>
+
+<h3>Rupa koja ostaje: dual write i outbox pattern</h3>
+<p>Commit prođe → Rabbit ugašen → događaj <strong>izgubljen zauvijek</strong>. Ovo je
+fundamentalan problem: <em>ne postoji način da se atomično upiše u bazu i pošalje u drugi
+sistem</em>.</p>
+
+<p><strong>Outbox pattern</strong>: događaj se upiše u tabelu <code>outbox</code> <em>u istoj
+transakciji</em> kao i ticket (jedan commit, oba ili nijedno), a poseban proces čita tu tabelu i
+šalje u Rabbit, brišući poslane. Ako Rabbit padne, red čeka u bazi.</p>
+
+<p>Nije implementiran — svjesna odluka: za ovaj sistem je gubitak jednog SMS-a prihvatljiv, a
+outbox donosi novu tabelu, scheduler i novi izvor grešaka. <em>Na intervjuu:</em> „šaljem
+poslije commita, što rješava rollback problem; za garanciju isporuke trebao bi outbox — znam
+gdje je rupa i svjesno je nisam zatvorio."</p>
+
+<h3>Poruka: šta ide unutra</h3>
+<pre><code>public record TicketEvent(
+        String eventId,          // UUID, nov za svaki događaj - nosilac idempotency-ja
+        Tip tip,                 // IZDAT | PROMIJENJEN
+        Long queueId,
+        TicketResponse ticket,   // CIJELI ticket, ne samo id
+        OffsetDateTime kada) {
+
+    public String routingKey() {
+        String sufiks = tip == Tip.IZDAT ? "created" : ticket.status().name().toLowerCase();
+        return "ticket." + sufiks;      // ticket.created, ticket.called, ticket.completed...
+    }
+}
+</code></pre>
+
+<table>
+<tr><th>Odluka</th><th>Zašto</th></tr>
+<tr><td>jedan tip s poljem <code>tip</code>, ne pet klasa</td><td>za pet događaja nad istim entitetom pet klasa nosi isto; razliku nosi routing key</td></tr>
+<tr><td><strong>fat event</strong> (cijeli ticket), ne samo id</td><td>primaoci hoće odmah prikazati/upisati bez dodatnog upita; analytics <em>baš</em> hoće stanje u trenutku događaja, ne trenutno. Alternativa (<em>thin event</em>, samo id) je bolja kad podatak brzo zastarijeva.</td></tr>
+<tr><td><code>eventId</code> se generiše pri <strong>pravljenju</strong></td><td>redostava mora nositi isti id, inače idempotency ne radi</td></tr>
+<tr><td><code>routingKey()</code> nije record komponenta</td><td>izvedena je iz <code>tip</code> i <code>status</code>; kao polje bi se mogla razići s podacima</td></tr>
+</table>
+
+<h3>Potrošač i ACK</h3>
+<p>Spring podigne nit po <code>@RabbitListener</code>; Rabbit joj <strong>gura</strong> poruke
+(nema pollinga). Za svaku: JSON → objekat → poziv metode → ako metoda završi normalno, pošalje
+<strong>ACK</strong> i Rabbit briše poruku. Ako baci — retry, pa DLQ.</p>
+
+<blockquote>
+Rabbit ne briše poruku kad je pošalje, nego kad primalac <em>potvrdi</em>. Ako backend padne
+usred obrade, poruka se vrati u queue i isporuči ponovo. Odatle garancija
+<strong>at-least-once</strong> — i odatle problem duplikata.
+</blockquote>
+
+<h3>Idempotency</h3>
+<pre><code>@RabbitListener(queues = RabbitConfig.ANALYTICS_QUEUE)
+@Transactional
+public void onTicketEvent(TicketEvent event) {
+    if (!guard.prviPut("analytics", event.eventId())) {
+        log.info("[analytics] duplikat {} preskočen", event.eventId());
+        return;
+    }
+    repository.save(TicketEventLog.from(event));
+}
+
+// IdempotencyGuard
+@Transactional(propagation = Propagation.MANDATORY)
+public boolean prviPut(String consumer, String eventId) {
+    String id = consumer + ":" + eventId;
+    if (repository.existsById(id)) return false;
+    repository.save(new ProcessedEvent(id));
+    return true;
+}
+</code></pre>
+
+<table>
+<tr><th>Odluka</th><th>Zašto</th></tr>
+<tr><td>ključ je <code>consumer:eventId</code></td><td>notifications i analytics obrađuju isti događaj nezavisno; sa samim <code>eventId</code> bi prvi „pojeo" događaj drugom</td></tr>
+<tr><td><code>MANDATORY</code> — marker i obrada u <strong>istoj</strong> transakciji</td><td>vidi ispod — najfinija stvar u projektu</td></tr>
+<tr><td><code>UNIQUE(event_id)</code> na <code>ticket_event_log</code></td><td>drugi sloj: čak i da guard zakaže u trci, baza ne dozvoli dva reda</td></tr>
+<tr><td>idempotency i u notifications, iako „samo loguje"</td><td>log je placeholder za SMS; duplikat SMS-a je pravi problem (košta, nervira)</td></tr>
+</table>
+
+<h3>Zašto ista transakcija — dva scenarija</h3>
+<pre><code>ISTA TRANSAKCIJA (naše):
+  marker upisan -&gt; obrada pukne -&gt; ROLLBACK briše I MARKER
+  -&gt; Rabbit redostavlja -&gt; guard kaže "nov" -&gt; obrada se ponovi.  ✓ ništa izgubljeno
+
+REQUIRES_NEW (marker u svojoj transakciji):
+  marker COMMITOVAN odmah -&gt; obrada pukne -&gt; rollback samo obrade
+  -&gt; Rabbit redostavlja -&gt; guard kaže "VEĆ OBRAĐENO" -&gt; preskoči.  ✗ događaj izgubljen zauvijek
+</code></pre>
+
+<h3>Retry i dead letter queue</h3>
+<pre><code>spring.rabbitmq.listener.simple.retry.enabled=true
+spring.rabbitmq.listener.simple.retry.max-attempts=3
+spring.rabbitmq.listener.simple.retry.initial-interval=1s
+spring.rabbitmq.listener.simple.retry.multiplier=2
+spring.rabbitmq.listener.simple.default-requeue-rejected=false
+</code></pre>
+
+<p>Tok kad listener baci: pokušaj (1 s) → pokušaj (2 s) → pokušaj → „Retries exhausted" →
+NACK bez requeue → queue ima <code>x-dead-letter-exchange</code> → poruka ide u
+<code>ticket.analytics.dlq</code> s headerom <code>x-death</code>.</p>
+
+<blockquote class="why">
+<strong><code>default-requeue-rejected=false</code> je ključan.</strong> Default je
+<code>true</code>: odbijena poruka se vraća <em>na početak</em> queue-a, listener je odmah opet
+uzme, opet pukne — <strong>beskonačna petlja koja blokira sve poruke iza nje</strong>
+(<em>poison message</em>). DLQ je rješenje: poruka sjedi gdje je čovjek može pogledati, glavni
+queue teče dalje.<br><br>
+Tri pokušaja su <em>u istoj isporuci</em>, u memoriji backenda (Spring Retry) — Rabbit vidi
+jednu isporuku i na kraju jedan NACK. Prolazna greška (baza nakratko nedostupna) se sama riješi;
+trajna ode u DLQ.
+</blockquote>
+
+<h2>17. Analytics: SQL agregacije i procjena čekanja</h2>
+
+<h3>Izvor podataka</h3>
+<p><code>ticket_event_log</code> — jedan red po događaju, puni ga <code>AnalyticsListener</code>.
+Namjerno denormalizovan (kopira <code>ticket_number</code>, <code>queue_id</code>,
+<code>status</code>): istorija ne smije zavisiti od toga da li ticket još postoji, a čita se
+mnogo češće nego što se piše.</p>
+
+<h3>Dnevna statistika</h3>
+<pre><code>SELECT q.id AS queueId, q.prefix AS prefix,
+       COUNT(t.id)                                               AS issued,
+       COUNT(*) FILTER (WHERE t.status = 'WAITING')              AS waiting,
+       COUNT(*) FILTER (WHERE t.status IN ('CALLED','SERVING'))  AS inProgress,
+       COUNT(*) FILTER (WHERE t.status = 'COMPLETED')            AS completed,
+       AVG(EXTRACT(EPOCH FROM (t.called_at - t.created_at)))     AS avgWaitSeconds,
+       AVG(EXTRACT(EPOCH FROM (t.completed_at - t.called_at)))
+           FILTER (WHERE t.status = 'COMPLETED')                 AS avgServiceSeconds
+FROM queue q
+LEFT JOIN ticket t ON t.queue_id = q.id AND t.issued_date = :day
+GROUP BY q.id, q.prefix
+ORDER BY q.id
+</code></pre>
+
+<table>
+<tr><th>Konstrukcija</th><th>Zašto</th></tr>
+<tr><td><code>COUNT(*) FILTER (WHERE ...)</code></td><td>prebroji podskup u <strong>jednom prolazu</strong> umjesto sedam odvojenih upita. Postgres-specifično; standardni ekvivalent je <code>COUNT(CASE WHEN ... THEN 1 END)</code>.</td></tr>
+<tr><td><code>LEFT JOIN</code></td><td>red bez ijednog ticketa se i dalje pojavi u tabeli, sa nulama. <code>INNER JOIN</code> bi ga izostavio i menadžer ne bi znao da postoji.</td></tr>
+<tr><td><code>EXTRACT(EPOCH FROM interval)</code></td><td>razlika dva <code>timestamptz</code> je <code>interval</code>; EPOCH ga pretvara u sekunde kao broj</td></tr>
+<tr><td>nativni SQL, ne JPQL</td><td>JPQL ne poznaje <code>FILTER</code> ni <code>EXTRACT</code>. Projekat je ionako Postgres-only (Flyway skripte).</td></tr>
+<tr><td>interface projekcije</td><td>Spring napravi proxy koji čita kolone po imenu aliasa — nije potreban entitet za nešto što nije entitet</td></tr>
+</table>
+
+<h3>Grafikon po satu — zamka sa zonom</h3>
+<pre><code>SELECT EXTRACT(HOUR FROM (e.occurred_at AT TIME ZONE :tz))::int AS hour, COUNT(*) AS issued
+FROM ticket_event_log e
+WHERE e.queue_id = :queueId AND e.event_type = 'IZDAT'
+  AND e.occurred_at &gt;= :from AND e.occurred_at &lt; :to
+GROUP BY 1 ORDER BY 1
+</code></pre>
+<p>Baza čuva UTC. „Danas" i „sat 14h" moraju biti u lokalnoj zoni
+(<code>app.timezone=Europe/Vienna</code>), inače je ponoć pogrešna i špica se pomjeri za dva sata.
+Servis još popunjava sve 24 sata nulama — SQL vraća samo sate koji imaju redova, a grafikon
+hoće punu osu.</p>
+
+<h3>Procjena čekanja</h3>
+<pre><code>procjena = (koliko ih čeka ispred) × (prosječno trajanje obrade)
+</code></pre>
+<p>V1 je bila konstanta za obradu. V2 (finalno): prosjek iz <em>zavrsenih ticketa istog reda</em>
+u zadnjih 7 dana; ako red nema istoriju → <code>service.avgDurationMinutes</code> koji je
+menadžer unio; ako ni to → globalna konstanta. Odgovor nosi polje <code>basis</code>
+(<code>HISTORY</code> / <code>DEFAULT</code>) pa klijent može prikazati „procjena" vs
+„gruba procjena".</p>
+
+<blockquote>
+<strong>Poštena ograničenja:</strong> procjena pretpostavlja <em>jedan šalter</em> (nemamo counter
+modul) i ne zna za pauze. Na intervjuu je bolje to reći nego praviti se da je formula tačna.
+</blockquote>
+
+<h1>Dio IV — Infrastruktura</h1>
+
+<h2>18. Docker i Docker Compose</h2>
+
+<h3>Pojmovi</h3>
+<table>
+<tr><th>Pojam</th><th>Šta je</th><th>Analogija</th></tr>
+<tr><td><strong>image</strong></td><td>nepromjenjiv snimak fajl sistema + uputstvo za start</td><td>instalacioni paket</td></tr>
+<tr><td><strong>container</strong></td><td>pokrenuta kopija image-a: izolovan proces + sloj za pisanje</td><td>pokrenut program</td></tr>
+<tr><td><strong>layer</strong></td><td>razlika koju donosi jedna Dockerfile instrukcija; keširana</td><td>commit</td></tr>
+<tr><td><strong>volume</strong></td><td>imenovani disk prostor koji preživi brisanje kontejnera</td><td>eksterni disk</td></tr>
+</table>
+
+<p>Kontejner <strong>nije mala virtuelna mašina</strong>: to je običan Linux proces kojem je
+kernel kroz <em>namespaces</em> i <em>cgroups</em> ograničio šta vidi (svoj fajl sistem, svoje
+procese, svoju mrežu) i koliko smije potrošiti. Zato starta za sekundu. Na Windowsu Docker
+Desktop drži jednu Linux VM (WSL2) u kojoj svi kontejneri rade kao procesi.</p>
+
+<h3>Backend Dockerfile — multi-stage</h3>
+<pre><code>FROM maven:3.9-eclipse-temurin-21 AS build
+WORKDIR /app
+COPY pom.xml .
+RUN mvn -q -B dependency:go-offline      # &lt;- ovaj sloj zavisi SAMO od pom.xml
+COPY src ./src
+RUN mvn -q -B -DskipTests package
+
+FROM eclipse-temurin:21-jre-alpine        # NOVI, prazan početak
+WORKDIR /app
+RUN addgroup -S app &amp;&amp; adduser -S app -G app
+USER app
+COPY --from=build /app/target/*.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "app.jar"]
+</code></pre>
+
+<table>
+<tr><th>Odluka</th><th>Zašto</th></tr>
+<tr><td><code>pom.xml</code> prije <code>src</code></td><td>Docker kešira sloj po sloj; prva promijenjena linija i sve ispod se izvršava ponovo. Ovako promjena koda ne skida ponovo 300 MB zavisnosti.</td></tr>
+<tr><td>dvije faze</td><td>za build treba Maven + JDK + <code>.m2</code> (~800 MB), za rad samo JRE + jar (~200 MB). Faza 2 kreće ispočetka; <code>COPY --from=build</code> prenese samo jar. Sloj iz prethodne faze se ne može „obrisati" — može se samo ne uzeti.</td></tr>
+<tr><td>Maven image, ne <code>mvnw</code></td><td><code>mvnw</code> sa Windows checkouta zna doći s CRLF i bez execute bita → „bad interpreter" u Linuxu</td></tr>
+<tr><td><code>-DskipTests</code></td><td>testovi koriste Testcontainers, koji traže Docker — a unutar Docker builda Dockera nema. Testovi trče u CI-ju.</td></tr>
+<tr><td><code>USER app</code></td><td>kompromitovana aplikacija ne dobija root u kontejneru</td></tr>
+<tr><td><code>ENTRYPOINT</code> u JSON obliku</td><td>pokreće <code>java</code> kao PID 1 bez shella; <code>docker stop</code> šalje signal direktno JVM-u i Spring uradi graceful shutdown. String oblik bi ubacio <code>/bin/sh -c</code> i signal bi otišao shellu.</td></tr>
+<tr><td><code>EXPOSE</code></td><td>samo dokumentacija — port otvara <code>ports:</code> ili <code>-p</code></td></tr>
+</table>
+
+<h3>Frontend Dockerfile — zašto nginx, a ne Node</h3>
+<pre><code>FROM node:22-alpine AS build
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci                                # node_modules se PRAVI, ne kopira
+COPY . .
+RUN npx ng build --configuration production
+
+FROM nginx:1.27-alpine
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/dist/frontend/browser /usr/share/nginx/html
+EXPOSE 80
+</code></pre>
+
+<blockquote class="why">
+<strong>Angular se ne izvršava na serveru.</strong> <code>ng build</code> prevede TypeScript u
+JavaScript i spakuje sve u statične fajlove. Server ih samo <em>šalje</em>; izvršava ih
+<em>browser korisnika</em>. Zato faza 2 nije „runtime za JS" nego web server. Node je bio
+potreban samo za build — kao <code>javac</code>.<br><br>
+Razlika: <code>jar</code> se <strong>izvršava</strong> (treba JRE), <code>dist/</code> se
+<strong>servira</strong> (treba bilo koji web server).
+</blockquote>
+
+<h3>nginx — uloge</h3>
+<pre><code>server {
+    listen 80;
+    root /usr/share/nginx/html;
+
+    location / { try_files $uri $uri/ /index.html; }        # SPA fallback
+
+    location /api/ {
+        proxy_pass http://backend:8080;                      # ime servisa iz compose-a
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location /ws {
+        proxy_pass http://backend:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;              # bez ovoga WebSocket ne prođe
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 3600s;                            # default 60 s kida mirnu vezu
+    }
+}
+</code></pre>
+
+<p>nginx je istovremeno <strong>server</strong> prema browseru (sluša 80) i <strong>klijent</strong>
+prema backendu (zove 8080). To je definicija <em>reverse proxy</em>-ja. Backend ne zna da nginx
+postoji — zato ga nema nigdje u backend konfiguraciji.</p>
+
+<p><code>try_files ... /index.html</code> rješava F5 na <code>/analytics</code>: taj fajl ne
+postoji, pa se vraća <code>index.html</code> i Angular router iz URL-a odluči šta prikazati.
+Bez toga — 404.</p>
+
+<h3>docker-compose.yml</h3>
+<pre><code>services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?postavi u .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql        # Postgres 18 traži mount OVDJE, ne /data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d queue_db"]
+    # namjerno BEZ ports: bazi pristupa samo backend, kroz internu mrežu
+
+  backend:
+    build: ./queue-backend/queue-backend
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/queue_db
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_RABBITMQ_HOST: rabbitmq
+      APP_JWT_SECRET: ${APP_JWT_SECRET:?postavi u .env}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+</code></pre>
+
+<table>
+<tr><th>Odluka</th><th>Zašto</th></tr>
+<tr><td>imena servisa umjesto <code>localhost</code></td><td>compose podiže privatnu mrežu s DNS-om: ime servisa = adresa. U kontejneru <code>localhost</code> znači <em>taj kontejner</em>.</td></tr>
+<tr><td><code>SPRING_DATASOURCE_URL</code> kao env</td><td>Spring „relaxed binding": env varijabla prepisuje <code>application.properties</code>. Isti jar radi lokalno i u compose-u.</td></tr>
+<tr><td><code>healthcheck</code> + <code>service_healthy</code></td><td>„kontejner pokrenut" ≠ „server spreman". Bez toga Flyway pokuša na Postgres koji još ne prima konekcije.</td></tr>
+<tr><td>Postgres bez <code>ports</code></td><td>nije izložen hostu — pristup samo iz interne mreže. Ovo je mrežna izolacija u malom.</td></tr>
+<tr><td><code>${VAR:?poruka}</code></td><td>compose odbije da krene ako tajna fali, s jasnom porukom</td></tr>
+<tr><td>named volume</td><td>podaci prežive <code>docker compose down</code>; briše ih tek <code>down -v</code></td></tr>
+<tr><td><code>user: rabbitmq</code></td><td>problem iz prakse: entrypoint kao root ostavi <code>.erlang.cookie</code> root-u, a proces radi kao <code>rabbitmq</code> → <code>eacces</code> i kontejner umre</td></tr>
+</table>
+
+<h2>19. Testiranje</h2>
+
+<h3>Piramida u ovom projektu</h3>
+<table>
+<tr><th>Vrsta</th><th>Šta testira</th><th>Brzina</th><th>Primjer</th></tr>
+<tr><td><strong>Unit (Mockito)</strong></td><td>logiku bez infrastrukture</td><td>~3 s</td><td><code>TicketServiceTest</code> (12), <code>QueueServiceTest</code> (4), <code>AnalyticsServiceTest</code> (5), <code>TicketEventPublisherTest</code> (4)</td></tr>
+<tr><td><strong>Integracioni (Testcontainers)</strong></td><td>ponašanje s pravim Postgresom/Redisom/Rabbitom</td><td>~30 s</td><td><code>TicketRateLimiterTest</code> (2), <code>AnalyticsIdempotencyTest</code> (1)</td></tr>
+<tr><td><strong>Concurrency</strong></td><td>ponašanje pod paralelnim opterećenjem</td><td>~5 s</td><td><code>TicketConcurrencyTest</code> (2)</td></tr>
+</table>
+<p>Ukupno 31 test.</p>
+
+<h3>Testcontainers — singleton obrazac</h3>
+<pre><code>@SpringBootTest
+@ActiveProfiles("test")
+public abstract class AbstractIntegrationTest {
+
+    @ServiceConnection
+    static final PostgreSQLContainer&lt;?&gt; POSTGRES = new PostgreSQLContainer&lt;&gt;("postgres:18-alpine");
+    @ServiceConnection
+    static final GenericContainer&lt;?&gt; REDIS = new GenericContainer&lt;&gt;("redis:7-alpine").withExposedPorts(6379);
+    @ServiceConnection
+    static final RabbitMQContainer RABBIT = new RabbitMQContainer("rabbitmq:3-management");
+
+    static { POSTGRES.start(); REDIS.start(); RABBIT.start(); }
+}
+</code></pre>
+
+<table>
+<tr><th>Odluka</th><th>Zašto</th></tr>
+<tr><td><strong>ne H2</strong></td><td>H2 nije Postgres: <code>FILTER</code>, <code>EXTRACT</code>, <code>FOR UPDATE</code> semantika i <code>timestamptz</code> se ponašaju drugačije. Test koji prolazi na H2 a pada u produkciji je gori od nikakvog testa.</td></tr>
+<tr><td>static blok, ne <code>@Container</code></td><td><code>@Container</code> gasi kontejnere poslije svake test klase, a Spring kešira kontekst između klasa — kontekst bi pokazivao na mrtav kontejner. Ovako žive do kraja JVM-a; Testcontainers ih počisti (Ryuk).</td></tr>
+<tr><td><code>@ServiceConnection</code></td><td>Boot sam pročita host/port/lozinku iz kontejnera i prepiše <code>spring.datasource.*</code> itd. Nema ručnog <code>@DynamicPropertySource</code>.</td></tr>
+<tr><td>nasumični portovi</td><td>testovi ne diraju razvojne kontejnere i rade na CI-ju</td></tr>
+<tr><td>profil <code>test</code></td><td>nosi JWT tajnu koju CI nema u <code>application-local.properties</code></td></tr>
+</table>
+
+<h3>Asinhroni test (Awaitility)</h3>
+<pre><code>rabbitTemplate.convertAndSend(EXCHANGE, event.routingKey(), event);
+rabbitTemplate.convertAndSend(EXCHANGE, event.routingKey(), event);   // isti event dvaput
+
+await().atMost(Duration.ofSeconds(10))
+       .untilAsserted(() -&gt; assertThat(repository.countByEventId(eventId)).isEqualTo(1));
+
+// pauza pa ponovo: da drugi upis nije "samo još u putu"
+await().pollDelay(Duration.ofSeconds(2)).atMost(Duration.ofSeconds(3))
+       .untilAsserted(() -&gt; assertThat(repository.countByEventId(eventId)).isEqualTo(1));
+</code></pre>
+<p>Listener radi u drugoj niti, pa se baza ne može provjeriti odmah. Drugi <code>await</code>
+s <code>pollDelay</code> je bitan: bez njega bi test prošao i da drugi upis kasni.</p>
+
+<h2>20. CI/CD</h2>
+
+<pre><code>jobs:
+  backend:                       # setup-java, cache maven, ./mvnw -B verify
+  frontend:                      # setup-node, npm ci, ng build --configuration production
+  docker:
+    needs: [backend, frontend]   # image se gradi tek kad su testovi zeleni
+</code></pre>
+
+<p>GitHub Actions runneri imaju Docker, pa Testcontainers radi bez podešavanja. Izvještaj
+testova se čuva kao artifact <code>if: always()</code> — i kad padnu, naročito tada.</p>
+
+<h1>Dio V — Intervju</h1>
+
+<h2>21. Pitanja i odgovori</h2>
+
+<h3>Arhitektura</h3>
+<p class="q">Zašto monolit, a ne mikroservisi?</p>
+<p>Mikroservisi rješavaju probleme koje ovaj sistem nema — nezavisan deploy timova, različita
+skaliranja, različiti jezici — a donose distribuirane transakcije, mrežne greške i pet
+pipeline-a. Napravio sam modularni monolit s čistim granicama po paketima: ako neki modul
+preraste, izdvaja se. Obrnuto (spajanje prerano rascijepljenih servisa) je mnogo skuplje.</p>
+
+<p class="q">Gdje ide poslovna logika i zašto?</p>
+<p>U servis. Kontroler radi HTTP stvari (token, validacija, DTO), repozitorij upite. Konkretan
+dokaz zašto: u V5 sam dodao RabbitMQ listener koji zove iste servise bez HTTP zahtjeva — da je
+provjera prelaza stanja bila u kontroleru, taj put bi je zaobišao. Izuzetak je rate limit, koji
+je namjerno u kontroleru jer je pravilo za HTTP pozivaoca, a ne poslovno pravilo.</p>
+
+<h3>Transakcije i concurrency</h3>
+<p class="q">Šta je race condition i kako si ga riješio?</p>
+<p>Izdavanje broja je „pročitaj brojač, dodaj 1, upiši" — dvije niti pročitaju istu vrijednost
+i obje upišu istu. Prvo sam ga <em>dokazao</em>: test sa 20 paralelnih niti, bez
+<code>@Transactional</code> na klasi (inače bi sve bilo u jednoj transakciji i trke ne bi bilo),
+s <code>CountDownLatch</code> da krenu istovremeno. Pale su dvije od tri. Rješenje je pesimistički
+lock na redu: <code>@Lock(PESSIMISTIC_WRITE)</code> daje <code>SELECT … FOR UPDATE</code>, pa
+druga nit čeka na SELECT-u dok prva ne commituje.</p>
+
+<p class="q">Zašto pesimistički, a ne optimistički?</p>
+<p>Sukobi su ovdje česti — u špici svi gađaju isti red. Optimistički (<code>@Version</code> +
+retry) je bolji kad su sukobi rijetki; pod ovim opterećenjem bi vraćao greške ljudima koji samo
+hoće broj. Cijena pesimističkog je da niti čekaju i da postoji rizik deadlocka — koji sam
+izbjegao time što i <code>create</code> i <code>callNext</code> zaključavaju isti red prvi, dakle
+uvijek isti redoslijed.</p>
+
+<p class="q">Šta je <code>Propagation.MANDATORY</code> i zašto je tu?</p>
+<p>Znači „moram biti pozvan iz već otvorene transakcije, inače greška". Lock živi tačno koliko i
+transakcija. Da je <code>getEntityForUpdate</code> imao svoju (<code>REQUIRES_NEW</code>), lock
+bi se pustio čim metoda vrati red — prije nego pozivalac upiše — i trka se vraća. Sa
+<code>REQUIRED</code> bi danas radilo, ali bi se greška mogla uvući sutra; <code>MANDATORY</code>
+je ograda koja puca odmah.</p>
+
+<p class="q">Zašto lock u bazi, a ne <code>synchronized</code>?</p>
+<p><code>synchronized</code> važi unutar jedne JVM. Čim pokrenem dvije instance backenda, svaka
+ima svoju bravu i trka se vraća. Postgres je jedan.</p>
+
+<p class="q">Kada se transakcija rollbackuje?</p>
+<p>Na <code>RuntimeException</code> i <code>Error</code>. Checked izuzeci <strong>ne</strong>
+rollbackuju po defaultu — to je česta zamka; mijenja se s <code>rollbackFor</code>. Druga zamka
+je self-invocation: <code>this.metoda()</code> iz iste klase zaobilazi proxy, pa anotacija ne
+važi.</p>
+
+<h3>Keširanje</h3>
+<p class="q">Koju strategiju keširanja koristiš?</p>
+<p>Cache-aside: čitanje puni keš, pisanje ga briše (ne upisuje novu vrijednost). Brisanje ne može
+biti pogrešno — najgore je jedan dodatni upit. Write-through bi zahtijevao da servis izračuna
+cijelu novu listu i pravio bi dvije istine.</p>
+
+<p class="q">Zašto brišeš keš poslije commita, a ne <code>@CacheEvict</code>?</p>
+<p>Dva razloga. Ključ je <code>queueId</code>, a metode primaju <code>ticketId</code>.
+I važnije: <code>@CacheEvict</code> briše dok transakcija traje, pa konkurentni čitač u tom
+prozoru pročita staro stanje iz baze i vrati ga u keš — ekran laže do isteka TTL-a. Registrujem
+<code>afterCommit</code> callback, i TTL od 30 s držim kao sigurnosnu mrežu.</p>
+
+<p class="q">Šta se desi kad Redis padne?</p>
+<p>Aplikacija radi sporije, ne pada i ne visi. <code>CacheErrorHandler</code> logira i pušta
+poziv u bazu. Ali to nije bilo dovoljno: Lettuce po defaultu čeka 60 s i dok zna da je veza
+pukla <em>stavlja komande u red</em> — pa sam dodao <code>timeout=1s</code> i
+<code>REJECT_COMMANDS</code>. I još jedan bug koji sam našao tek gašenjem Redisa: handler štiti
+samo anotacije, a moj direktan <code>cache.evict()</code> u <code>afterCommit</code> je rušio
+POST s 500 za ticket koji je već bio u bazi — treba mu svoj try/catch.</p>
+
+<h3>Rate limiting</h3>
+<p class="q">Kako radi token bucket i zašto ne brojač po minuti?</p>
+<p>Kanta s N žetona koja se puni N po minuti; zahtjev troši jedan. Brojač po kalendarskoj minuti
+ima rupu na granici: 5 u 12:00:59 + 5 u 12:01:00 = 10 u sekundi.</p>
+
+<p class="q">Zašto je stanje u Redisu i zašto po korisniku?</p>
+<p>U memoriji bi dvije instance backenda dale dupli limit. Po korisniku, a ne po IP-u, jer cijela
+čekaonica dijeli jedan WiFi — jedan čovjek bi blokirao sve. Endpoint ionako traži token.</p>
+
+<p class="q">Šta ako Redis padne — propuštaš ili blokiraš?</p>
+<p>Fail-open, svjesno. Rate limit štiti od zloupotrebe, nije sigurnosna granica; bolje je da
+ljudi uzimaju brojeve bez limita nego da niko ne može. Za login ili plaćanje bi odluka bila
+obrnuta.</p>
+
+<h3>Poruke</h3>
+<p class="q">Zašto broker, a ne direktan poziv?</p>
+<p>Da šalter ne čeka SMS provajdera, da pad provajdera ne ruši operaciju koja je u bazi uspjela,
+i da novi potrošač ne traži izmjenu servisa. <code>TicketService</code> ne zna da notifications i
+analytics postoje.</p>
+
+<p class="q">Kako garantuješ da poruka ne ode za rollbackovan podatak?</p>
+<p><code>objavi()</code> samo publikuje Spring in-process event; slanje je u
+<code>@TransactionalEventListener(AFTER_COMMIT)</code>. Prije commita ništa ne izlazi iz JVM-a.</p>
+
+<p class="q">A ako commit prođe pa Rabbit padne?</p>
+<p>Događaj je izgubljen — logujem ERROR. To je dual write problem i rješava ga outbox pattern:
+događaj se upiše u tabelu u istoj transakciji, poseban proces ga šalje. Nisam ga implementirao;
+za ovaj sistem je gubitak jednog SMS-a prihvatljiv, a outbox donosi tabelu, scheduler i nove
+greške. Znam gdje je rupa.</p>
+
+<p class="q">Šta je at-least-once i kako se braniš od duplikata?</p>
+<p>Rabbit briše poruku tek na ACK; ako potrošač padne poslije obrade a prije ACK-a, poruka se
+redostavlja. Svaki događaj nosi UUID, a potrošač prije obrade upiše <code>(consumer, eventId)</code>
+u <code>processed_event</code>. Ključno: marker i obrada su u <strong>istoj</strong> transakciji —
+ako obrada pukne, rollback briše i marker, pa se redostava obradi kao prva. Sa
+<code>REQUIRES_NEW</code> bi marker ostao i događaj bi bio izgubljen zauvijek. Dodatno,
+<code>UNIQUE(event_id)</code> u tabeli je drugi sloj.</p>
+
+<p class="q">Šta je DLQ i zašto <code>requeue=false</code>?</p>
+<p>Poruka koju listener ne može obraditi bi se s <code>requeue=true</code> vraćala na početak
+queue-a u beskonačnoj petlji i blokirala sve iza sebe — poison message. Sa <code>false</code> i
+<code>deadLetterExchange</code>, poslije 3 pokušaja s backoffom ide u
+<code>&lt;ime&gt;.dlq</code> gdje je čovjek pregleda.</p>
+
+<p class="q">Zašto topic exchange i dva queue-a?</p>
+<p>Topic dozvoljava da se potrošač pretplati šablonom — novi potrošač koji hoće samo
+<code>ticket.called</code> ne traži izmjenu producera. Dva queue-a jer bi jedan zajednički
+<em>dijelio</em> poruke između potrošača; ovako svaki dobije svoju kopiju, i pad jednog ne utiče
+na drugog.</p>
+
+<h3>Security</h3>
+<p class="q">Objasni tok autentikacije.</p>
+<p>Login: BCrypt <code>matches</code> nad hashom iz baze, pa <code>JwtService.generate</code>.
+Svaki sljedeći zahtjev: <code>JwtAuthFilter</code> pročita <code>Authorization</code> header,
+provjeri potpis i rok, učita korisnika <em>iz baze</em> (da promjena uloge odmah važi) i upiše
+<code>Authentication</code> u <code>SecurityContext</code> — ThreadLocal vezan za tu nit. Zatim
+filter chain provjerava URL pravila, a <code>@PreAuthorize</code> ulogu.</p>
+
+<p class="q">401 ili 403?</p>
+<p>401 „nisi se predstavio", 403 „predstavio si se, nemaš prava". Springov default entry point
+vraća 403 pa sam ga zamijenio. I naletio sam na zamku: kad <code>@PreAuthorize</code> odbije,
+Spring interno šalje zahtjev na <code>/error</code>, koji opet prolazi kroz lanac s praznim
+kontekstom — bez <code>/error</code> kao <code>permitAll</code>, 403 bude pregažen sa 401.</p>
+
+<p class="q">Zašto je CSRF isključen?</p>
+<p>CSRF brani od zloupotrebe kredencijala koje browser šalje <em>sam</em> — prvenstveno
+cookie-ja. Token je u <code>Authorization</code> headeru koji browser ne prilaže automatski, pa
+napad ne postoji. Da koristim cookie za token, CSRF bi morao ostati.</p>
+
+<p class="q">Može li se JWT poništiti?</p>
+<p>Ne u ovoj postavci — server ga ne pamti, pa vrijedi do isteka. Rješenja su blacklista u
+Redisu ili kratki access token + refresh token. Za ovaj sistem sam izabrao rok od 2 h i
+prihvatio ograničenje.</p>
+
+<h3>Testiranje i infrastruktura</h3>
+<p class="q">Zašto Testcontainers, a ne H2?</p>
+<p>Zato što kod koristi stvari koje H2 nema ili radi drugačije: <code>COUNT(*) FILTER</code>,
+<code>EXTRACT(EPOCH …)</code>, <code>SELECT … FOR UPDATE</code>, <code>timestamptz</code>. Test
+koji prolazi na H2 a pada u produkciji daje lažnu sigurnost.</p>
+
+<p class="q">Kako se testira concurrency?</p>
+<p><code>ExecutorService</code> + <code>CountDownLatch</code> da niti krenu istovremeno,
+<code>ConcurrentLinkedQueue</code> za rezultate, i <strong>bez</strong> <code>@Transactional</code>
+na klasi. Prvo sam napisao test koji pada, pa dodao lock — dokaz prije popravke.</p>
+
+<p class="q">Šta radi multi-stage build?</p>
+<p>Prva faza ima Maven i JDK i pravi jar; druga kreće od praznog JRE image-a i uzima samo jar.
+Rezultat je ~200 MB umjesto ~800 MB, bez kompajlera i izvornog koda u produkciji. Sloj iz
+prethodne faze se ne može obrisati — može se samo ne uzeti.</p>
+
+<h2>22. Rječnik pojmova</h2>
+<table>
+<tr><th>Pojam</th><th>Značenje u ovom projektu</th></tr>
+<tr><td>ACK</td><td>potvrda potrošača da je poruka obrađena; Rabbit tek tada briše poruku</td></tr>
+<tr><td>at-least-once</td><td>garancija da poruka stigne bar jednom — dakle može i dvaput</td></tr>
+<tr><td>cache-aside</td><td>čitanje puni keš, pisanje ga briše</td></tr>
+<tr><td>dirty checking</td><td>Hibernate na commitu uporedi entitet sa snimkom i sam pošalje UPDATE</td></tr>
+<tr><td>DLQ</td><td>dead letter queue — red za poruke koje su 3 puta pukle</td></tr>
+<tr><td>dual write</td><td>upis u dva sistema bez zajedničke transakcije; izvor nekonzistentnosti</td></tr>
+<tr><td>fail-open / fail-closed</td><td>kad zaštita ne radi: propusti sve / odbij sve</td></tr>
+<tr><td>idempotency</td><td>ista operacija izvršena dvaput daje isti rezultat kao jednom</td></tr>
+<tr><td>outbox pattern</td><td>događaj u bazu u istoj transakciji, poseban proces ga šalje brokeru</td></tr>
+<tr><td>poison message</td><td>poruka koja uvijek puca i blokira queue ako se vraća u njega</td></tr>
+<tr><td>propagation</td><td>odnos metode prema postojećoj transakciji pozivaoca</td></tr>
+<tr><td>proxy (Spring)</td><td>omotač oko beana koji izvršava anotacije (transakcije, security, keš)</td></tr>
+<tr><td>reverse proxy</td><td>server koji prima zahtjev i prosljeđuje ga drugom serveru</td></tr>
+<tr><td>ThreadLocal</td><td>promjenljiva s posebnom vrijednošću po niti (SecurityContext, transakcija)</td></tr>
+<tr><td>token bucket</td><td>algoritam rate limita: kanta žetona koja se puni konstantnim tempom</td></tr>
+<tr><td>TTL</td><td>vrijeme poslije kojeg unos u kešu sam nestaje</td></tr>
+<tr><td>type erasure</td><td>Java u runtime-u zaboravi generike; otud <code>JavaType</code> za Jackson</td></tr>
+</table>
+
+<h2>23. Mapa fajlova</h2>
+<table>
+<tr><th>Fajl</th><th>Uloga</th></tr>
+<tr><td><code>config/SecurityConfig</code></td><td>filter chain, pravila po URL-u, BCrypt bean</td></tr>
+<tr><td><code>config/JwtAuthFilter</code></td><td>token → SecurityContext, na svakom zahtjevu</td></tr>
+<tr><td><code>config/WebSocketConfig</code></td><td>STOMP endpoint <code>/ws</code>, broker za <code>/topic</code></td></tr>
+<tr><td><code>config/CacheConfig</code></td><td>serializer, TTL, error handler, Lettuce opcije</td></tr>
+<tr><td><code>config/RateLimitConfig</code></td><td>Bucket4j <code>ProxyManager</code> nad Redisom</td></tr>
+<tr><td><code>config/RabbitConfig</code></td><td>exchange, queue-ovi, DLQ, bindinzi, JSON konverter</td></tr>
+<tr><td><code>users/JwtService</code></td><td>pravi i provjerava token</td></tr>
+<tr><td><code>users/AppUserDetailsService</code></td><td>most između <code>app_user</code> tabele i Spring Security-ja</td></tr>
+<tr><td><code>queues/QueueService</code></td><td><code>getEntity</code> (bez locka) i <code>getEntityForUpdate</code> (lock + MANDATORY)</td></tr>
+<tr><td><code>tickets/TicketStatus</code></td><td>enum + tabela dozvoljenih prelaza</td></tr>
+<tr><td><code>tickets/TicketService</code></td><td>izdavanje (lock, brojač), state machine, vlasništvo</td></tr>
+<tr><td><code>tickets/TicketEvent</code></td><td>poruka: eventId, tip, ticket, <code>routingKey()</code></td></tr>
+<tr><td><code>tickets/TicketEventPublisher</code></td><td>jedini izlaz događaja: WebSocket + Rabbit, poslije commita</td></tr>
+<tr><td><code>tickets/QueueTicketsCache</code></td><td>eviction poslije commita, s try/catch</td></tr>
+<tr><td><code>tickets/TicketRateLimiter</code></td><td>token bucket po korisniku, fail-open</td></tr>
+<tr><td><code>common/idempotency/IdempotencyGuard</code></td><td><code>prviPut(consumer, eventId)</code>, MANDATORY</td></tr>
+<tr><td><code>common/GlobalExceptionHandler</code></td><td>izuzetak → status + jedinstven JSON</td></tr>
+<tr><td><code>notifications/NotificationListener</code></td><td>potrošač 1 — SMS (za sada log)</td></tr>
+<tr><td><code>analytics/AnalyticsListener</code></td><td>potrošač 2 — <code>ticket_event_log</code></td></tr>
+<tr><td><code>analytics/AnalyticsRepository</code></td><td>nativni SQL: dnevna statistika, po satu, prosjek obrade</td></tr>
+<tr><td><code>analytics/AnalyticsService</code></td><td>agregacije + procjena čekanja (HISTORY/DEFAULT)</td></tr>
+<tr><td><code>db/migration/V1__init.sql</code></td><td>organization, location, service, queue, ticket</td></tr>
+<tr><td><code>db/migration/V2__users.sql</code></td><td><code>app_user</code></td></tr>
+<tr><td><code>db/migration/V3__events.sql</code></td><td><code>processed_event</code>, <code>ticket_event_log</code></td></tr>
+<tr><td><code>db/migration/V4__ticket_user.sql</code></td><td><code>ticket.user_id</code> (vlasništvo)</td></tr>
+<tr><td><code>test/AbstractIntegrationTest</code></td><td>singleton Testcontainers, <code>@ServiceConnection</code></td></tr>
+<tr><td><code>docker-compose.yml</code></td><td>5 servisa, healthcheck-ovi, mreža, volume-i</td></tr>
+<tr><td><code>frontend/nginx.conf</code></td><td>SPA fallback + proxy za <code>/api</code> i <code>/ws</code></td></tr>
+</table>
+
+<blockquote class="tip">
+<strong>Ako se pamti samo pet stvari iz cijelog projekta:</strong><br>
+1. Dokaži problem prije nego ga riješiš (concurrency test).<br>
+2. Lock i upis moraju biti u istoj transakciji.<br>
+3. Sve što izlazi van baze ide poslije commita.<br>
+4. Keš i rate limit smiju pasti — sistem ne smije.<br>
+5. Poruka može stići dvaput; marker i obrada idu zajedno.
+</blockquote>
+
+</body>
+</html>
