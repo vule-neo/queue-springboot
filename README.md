@@ -168,7 +168,6 @@ queue-backend/queue-backend/   Spring Boot app (src/main/java/com/queue/backend/
 frontend/frontend/             Angular app
 docker-compose.yml             postgres, redis, rabbitmq, backend, frontend
 .github/workflows/ci.yml       build + tests + image build on every push
-CLAUDE.md                      working notes: plan by version, lessons learned, open debt
 ```
 
 ## Status

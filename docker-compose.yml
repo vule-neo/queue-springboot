@@ -46,7 +46,7 @@ services:
     image: rabbitmq:3-management
     # Kao rabbitmq korisnik od starta: entrypoint kao root ostavlja
     # .erlang.cookie root-u pa proces (rabbitmq) ne moze da ga procita
-    # i kontejner umre sa "eacces". Vidi CLAUDE.md.
+    # i kontejner umre sa "eacces".
     user: rabbitmq
     ports:
       - "5672:5672"
